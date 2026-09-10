@@ -1,5 +1,6 @@
 import html
 import os
+import re
 import time
 from threading import Lock
 
@@ -43,13 +44,27 @@ def send_message(chat_id, text):
     )
 
 
+def detect_query_type(query):
+    value = query.strip()
+    if re.fullmatch(r"\+?[0-9][0-9 .()-]{7,19}", value):
+        return "nomor telepon"
+    if re.fullmatch(r"[0-9]{16}", value):
+        return "NIK"
+    if re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
+        return "email"
+    if re.fullmatch(r"@?[A-Za-z0-9_.-]{3,64}", value):
+        return "username / identifier"
+    if "." in value and " " not in value:
+        return "domain / identifier"
+    return "identifier"
+
+
 def allowed_query(query):
-    # Initial version is deliberately limited to email/domain checks.
     if not query or len(query) > MAX_QUERY_LENGTH:
         return False
     if any(ch in query for ch in ["\n", "\r", "<", ">"]):
         return False
-    return "@" in query or "." in query
+    return bool(re.fullmatch(r"[A-Za-z0-9@+_.()\- /]{3,120}", query))
 
 
 def rate_allowed(user_id):
@@ -75,8 +90,18 @@ def query_api(query):
     return response.json()
 
 
+def _count_records(value):
+    if isinstance(value, list):
+        return len(value)
+    if isinstance(value, dict):
+        return sum(_count_records(item) for item in value.values())
+    return 0
+
+
 def format_safe_result(query, result):
-    # Do not forward raw breach records or personal data to Telegram.
+    """Return an exposure summary without forwarding raw breach records/PII."""
+    query_type = detect_query_type(query)
+
     if not isinstance(result, dict):
         return "⚠️ API mengembalikan format yang tidak dikenali."
 
@@ -85,7 +110,12 @@ def format_safe_result(query, result):
 
     listing = result.get("List")
     if not isinstance(listing, dict):
-        return "ℹ️ Tidak ada hasil yang dapat ditampilkan."
+        return (
+            "🔎 <b>HASIL PEMERIKSAAN</b>\n\n"
+            f"Jenis: <b>{html.escape(query_type)}</b>\n"
+            f"Target: <code>{html.escape(query)}</code>\n"
+            "Status: ℹ️ Tidak ada hasil yang dapat ditampilkan."
+        )
 
     names = [str(name) for name in listing.keys()]
     names = [name for name in names if name.lower() != "no results found"]
@@ -93,24 +123,35 @@ def format_safe_result(query, result):
     if not names:
         return (
             "🔎 <b>HASIL PEMERIKSAAN</b>\n\n"
+            f"Jenis: <b>{html.escape(query_type)}</b>\n"
             f"Target: <code>{html.escape(query)}</code>\n"
             "Status: ✅ Tidak ada sumber yang terdeteksi oleh API."
         )
 
-    shown = names[:10]
-    sources = "\n".join(f"• {html.escape(name)}" for name in shown)
+    shown = names[:15]
+    lines = []
+    total_records = 0
+    for name in shown:
+        count = _count_records(listing.get(name))
+        total_records += count
+        suffix = f" — {count} record" if count else ""
+        lines.append(f"• {html.escape(name)}{suffix}")
+
     extra = len(names) - len(shown)
     if extra > 0:
-        sources += f"\n• +{extra} sumber lainnya"
+        lines.append(f"• +{extra} sumber lainnya")
 
+    source_text = "\n".join(lines)
     return (
-        "🔎 <b>HASIL PEMERIKSAAN</b>\n\n"
+        "🔎 <b>GWPROJECT — EXPOSURE CHECK</b>\n\n"
+        f"Jenis: <b>{html.escape(query_type)}</b>\n"
         f"Target: <code>{html.escape(query)}</code>\n"
         "Status: ⚠️ Sumber terdeteksi\n\n"
-        "Sumber/database yang terdeteksi:\n"
-        f"{sources}\n\n"
-        "ℹ️ Bot hanya menampilkan ringkasan. Data pribadi mentah "
-        "dari sumber kebocoran tidak diteruskan ke Telegram."
+        "<b>Sumber/database:</b>\n"
+        f"{source_text}\n\n"
+        f"Perkiraan record: <b>{total_records}</b>\n\n"
+        "ℹ️ Untuk keamanan, bot tidak meneruskan record mentah atau "
+        "data pribadi sensitif dari database kebocoran ke Telegram."
     )
 
 
@@ -141,10 +182,12 @@ def webhook():
             chat_id,
             "🛡️ <b>GWPROJECT DATA SECURITY</b>\n\n"
             "Bot aktif.\n\n"
-            "Gunakan:\n"
-            "<code>/cek email@example.com</code>\n\n"
-            "Gunakan bot hanya untuk pemeriksaan data yang Anda miliki "
-            "atau yang memang Anda berwenang untuk periksa.",
+            "Gunakan satu perintah untuk memeriksa identifier yang Anda "
+            "miliki atau berwenang untuk audit:\n\n"
+            "<code>/cek 081234567890</code>\n"
+            "<code>/cek user@example.com</code>\n"
+            "<code>/cek @username</code>\n"
+            "<code>/cek 3201234567890001</code>",
         )
         return jsonify({"ok": True})
 
@@ -155,9 +198,12 @@ def webhook():
         if not allowed_query(query):
             send_message(
                 chat_id,
-                "❌ Format tidak valid. Versi awal hanya menerima "
-                "email atau domain.\n\n"
-                "Contoh:\n<code>/cek email@example.com</code>",
+                "❌ Format tidak valid atau terlalu panjang.\n\n"
+                "Contoh:\n"
+                "<code>/cek 081234567890</code>\n"
+                "<code>/cek user@example.com</code>\n"
+                "<code>/cek @username</code>\n"
+                "<code>/cek 3201234567890001</code>",
             )
             return jsonify({"ok": True})
 
@@ -165,7 +211,11 @@ def webhook():
             send_message(chat_id, "⏱️ Tunggu beberapa detik sebelum melakukan pemeriksaan lagi.")
             return jsonify({"ok": True})
 
-        send_message(chat_id, "🔎 Memproses pemeriksaan...")
+        query_type = detect_query_type(query)
+        send_message(
+            chat_id,
+            f"🔎 Memproses pemeriksaan <b>{html.escape(query_type)}</b>...",
+        )
 
         try:
             result = query_api(query)
@@ -182,8 +232,11 @@ def webhook():
     send_message(
         chat_id,
         "Perintah yang tersedia:\n\n"
+        "🔎 <code>/cek nomor-telepon</code>\n"
         "🔎 <code>/cek email@example.com</code>\n"
-        "ℹ️ <code>/start</code>",
+        "🔎 <code>/cek @username</code>\n"
+        "🔎 <code>/cek NIK</code>\n\n"
+        "Gunakan hanya untuk data yang Anda miliki atau berwenang untuk audit.",
     )
     return jsonify({"ok": True})
 

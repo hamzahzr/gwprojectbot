@@ -90,69 +90,145 @@ def query_api(query):
     return response.json()
 
 
-def _count_records(value):
-    if isinstance(value, list):
-        return len(value)
+SENSITIVE_KEYS = (
+    "nik", "ktp", "phone", "telephone", "tel", "mobile", "email",
+    "mail", "name", "fullname", "full_name", "address", "alamat",
+    "password", "passwd", "pass", "token", "secret", "cookie", "session",
+    "authorization", "api_key", "apikey", "dob", "birth", "birthday",
+    "username", "user_name", "login", "credit", "card", "account",
+)
+
+
+def is_sensitive_key(key):
+    normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+    return any(term in normalized for term in SENSITIVE_KEYS)
+
+
+def mask_value(value):
+    text = str(value)
+    if len(text) <= 4:
+        return "••••"
+    if "@" in text:
+        local, domain = text.split("@", 1)
+        return (local[:1] + "••••@" + domain) if local else "••••@" + domain
+    if len(text) >= 8 and text.isdigit():
+        return text[:2] + "••••" + text[-2:]
+    return text[:2] + "••••" + text[-2:]
+
+
+def _safe_value(key, value):
+    if is_sensitive_key(key):
+        return mask_value(value)
     if isinstance(value, dict):
-        return sum(_count_records(item) for item in value.values())
-    return 0
+        return {str(k): _safe_value(k, v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_safe_value(key, item) if not isinstance(item, dict) else _safe_value("record", item) for item in value]
+    return value
+
+
+def _flatten_safe(value, prefix=""):
+    rows = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            rows.extend(_flatten_safe(item, path))
+    elif isinstance(value, list):
+        for index, item in enumerate(value, 1):
+            rows.extend(_flatten_safe(item, f"{prefix}[{index}]"))
+    else:
+        key = prefix.rsplit(".", 1)[-1].split("[", 1)[0]
+        display = mask_value(value) if is_sensitive_key(key) else str(value)
+        rows.append((prefix, display))
+    return rows
+
+
+def _split_telegram_text(text, max_length=3900):
+    if len(text) <= max_length:
+        return [text]
+    chunks = []
+    current = []
+    size = 0
+    for line in text.split("\n"):
+        addition = len(line) + (1 if current else 0)
+        if current and size + addition > max_length:
+            chunks.append("\n".join(current))
+            current = [line]
+            size = len(line)
+        else:
+            current.append(line)
+            size += addition
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
 
 
 def format_safe_result(query, result):
-    """Return an exposure summary without forwarding raw breach records/PII."""
+    """Return a detailed exposure summary with sensitive values masked."""
     query_type = detect_query_type(query)
 
     if not isinstance(result, dict):
-        return "⚠️ API mengembalikan format yang tidak dikenali."
+        return ["⚠️ API mengembalikan format yang tidak dikenali."]
 
     if result.get("Error code"):
-        return "⚠️ Pemeriksaan gagal karena API mengembalikan error."
+        return ["⚠️ Pemeriksaan gagal karena API mengembalikan error."]
 
     listing = result.get("List")
     if not isinstance(listing, dict):
-        return (
-            "🔎 <b>HASIL PEMERIKSAAN</b>\n\n"
+        return [
+            "🔎 <b>GWPROJECT — EXPOSURE CHECK</b>\n\n"
             f"Jenis: <b>{html.escape(query_type)}</b>\n"
             f"Target: <code>{html.escape(query)}</code>\n"
             "Status: ℹ️ Tidak ada hasil yang dapat ditampilkan."
-        )
+        ]
 
-    names = [str(name) for name in listing.keys()]
-    names = [name for name in names if name.lower() != "no results found"]
-
+    names = [str(name) for name in listing.keys() if str(name).lower() != "no results found"]
     if not names:
-        return (
-            "🔎 <b>HASIL PEMERIKSAAN</b>\n\n"
+        return [
+            "🔎 <b>GWPROJECT — EXPOSURE CHECK</b>\n\n"
             f"Jenis: <b>{html.escape(query_type)}</b>\n"
             f"Target: <code>{html.escape(query)}</code>\n"
             "Status: ✅ Tidak ada sumber yang terdeteksi oleh API."
-        )
+        ]
 
-    shown = names[:15]
-    lines = []
+    lines = [
+        "🔎 <b>GWPROJECT — EXPOSURE CHECK</b>",
+        "",
+        f"Jenis: <b>{html.escape(query_type)}</b>",
+        f"Target: <code>{html.escape(query)}</code>",
+        "Status: ⚠️ Sumber terdeteksi",
+        "",
+    ]
+
     total_records = 0
-    for name in shown:
-        count = _count_records(listing.get(name))
-        total_records += count
-        suffix = f" — {count} record" if count else ""
-        lines.append(f"• {html.escape(name)}{suffix}")
+    for source_name in names[:15]:
+        source_data = listing.get(source_name)
+        records = source_data if isinstance(source_data, list) else [source_data]
+        total_records += len(records)
+        lines.append(f"<b>📁 {html.escape(source_name)}</b> — {len(records)} record")
 
-    extra = len(names) - len(shown)
-    if extra > 0:
-        lines.append(f"• +{extra} sumber lainnya")
+        for index, record in enumerate(records[:20], 1):
+            lines.append(f"  <b>Record {index}</b>")
+            if isinstance(record, dict):
+                for key, value in _flatten_safe(record):
+                    lines.append(f"  • {html.escape(key)}: <code>{html.escape(value)}</code>")
+            else:
+                lines.append(f"  • value: <code>{html.escape(str(record))}</code>")
+        if len(records) > 20:
+            lines.append(f"  • +{len(records) - 20} record lain tidak ditampilkan")
+        lines.append("")
 
-    source_text = "\n".join(lines)
-    return (
-        "🔎 <b>GWPROJECT — EXPOSURE CHECK</b>\n\n"
-        f"Jenis: <b>{html.escape(query_type)}</b>\n"
-        f"Target: <code>{html.escape(query)}</code>\n"
-        "Status: ⚠️ Sumber terdeteksi\n\n"
-        "<b>Sumber/database:</b>\n"
-        f"{source_text}\n\n"
-        f"Perkiraan record: <b>{total_records}</b>\n\n"
-        "ℹ️ Untuk keamanan, bot tidak meneruskan record mentah atau "
-        "data pribadi sensitif dari database kebocoran ke Telegram."
-    )
+    if len(names) > 15:
+        lines.append(f"• +{len(names) - 15} sumber lainnya")
+        lines.append("")
+
+    lines.extend([
+        f"📊 Total record yang diringkas: <b>{total_records}</b>",
+        "",
+        "🔐 <i>Field sensitif seperti NIK, nomor telepon, email, nama, username, alamat, password, token, dan kredensial dimasking.</i>",
+        "Gunakan hanya untuk data yang Anda miliki atau berwenang untuk audit.",
+    ])
+
+    return _split_telegram_text("\n".join(lines))
 
 
 @app.get("/")
@@ -219,7 +295,8 @@ def webhook():
 
         try:
             result = query_api(query)
-            send_message(chat_id, format_safe_result(query, result))
+            for chunk in format_safe_result(query, result):
+                send_message(chat_id, chunk)
         except requests.RequestException:
             send_message(chat_id, "❌ API tidak dapat dihubungi saat ini.")
         except (ValueError, TypeError):

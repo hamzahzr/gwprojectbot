@@ -82,7 +82,7 @@ def query_api(query):
 
 
 def format_simple_result(query, result):
-    """Format results into a clean Telegram layout while masking sensitive values."""
+    """Render API results in a compact, structured Telegram layout."""
     if not isinstance(result, dict):
         return ["❌ Data tidak dapat ditampilkan."]
 
@@ -112,57 +112,52 @@ def format_simple_result(query, result):
         "║       <b>GWPROJECT RESULT</b>         ║\n"
         "╚════════════════════════════════╝\n\n"
         "🔎 <b>QUERY</b>\n"
-        f"<code>{html.escape(query)}</code>\n\n"
+        f"{html.escape(query)}\n\n"
     )
 
-    parts = [header]
-    record_number = 0
+    chunks = []
+    current = header
+    record_no = 0
     for source_name, records in sources:
-        parts.append(
-            "📁 <b>SOURCE</b>\n"
-            f"{html.escape(source_name)}\n"
-        )
+        source_block = f"📁 <b>SOURCE</b>\n{html.escape(source_name)}\n\n"
+        if len(current) + len(source_block) > 3800 and current != header:
+            chunks.append(current.rstrip())
+            current = ""
+        current += source_block
+
         for record in records:
-            record_number += 1
-            parts.append(f"📄 <b>RECORD #{record_number}</b>\n────────────────────────────────")
+            record_no += 1
+            lines = [f"📄 <b>RECORD #{record_no}</b>", "────────────────────────────────"]
             if isinstance(record, dict):
                 for key, value in record.items():
                     if value in (None, "", [], {}):
                         continue
-                    value = _compact_value(value)
-                    value = _mask_sensitive(key, value)
-                    parts.append(
-                        f"{html.escape(_pretty_key(key)):18}: <code>{html.escape(str(value))}</code>"
+                    if isinstance(value, (dict, list)):
+                        value = _compact_value(value)
+                    key_text = _pretty_key(key)
+                    lines.append(
+                        f"{html.escape(key_text):<18}: {html.escape(str(value))}"
                     )
             else:
-                parts.append(f"Data               : <code>{html.escape(str(record))}</code>")
-            parts.append("")
+                lines.append(f"Value             : {html.escape(str(record))}")
+            block = "\n".join(lines) + "\n\n"
+            if len(current) + len(block) > 3800 and current:
+                chunks.append(current.rstrip())
+                current = ""
+            current += block
 
-    parts.append(
+    summary = (
         "📊 <b>SUMMARY</b>\n"
         "────────────────────────────────\n"
         f"Sources : {len(sources)}\n"
         f"Records : {total_records}"
     )
-
-    text = "\n".join(parts).strip()
-    return split_message(text)
-
-
-def split_message(text, max_length=3900):
-    if len(text) <= max_length:
-        return [text]
-    chunks = []
-    current = ""
-    for block in text.split("\n\n"):
-        candidate = block if not current else current + "\n\n" + block
-        if current and len(candidate) > max_length:
-            chunks.append(current)
-            current = block
-        else:
-            current = candidate
-    if current:
-        chunks.append(current)
+    if len(current) + len(summary) > 3900 and current:
+        chunks.append(current.rstrip())
+        current = ""
+    current += summary
+    if current.strip():
+        chunks.append(current.rstrip())
     return chunks
 
 
@@ -181,22 +176,6 @@ def _compact_value(value):
         return " | ".join(parts)
     if isinstance(value, list):
         return ", ".join(str(item) for item in value)
-    return value
-
-
-def _mask_sensitive(key, value):
-    """Prevent raw personal identifiers, credentials, and secrets from being echoed."""
-    key_text = str(key).lower().replace("_", " ").replace("-", " ")
-    sensitive = (
-        "nik", "phone", "mobile", "telephone", "email", "e mail", "address",
-        "nama", "name", "username", "password", "passwd", "token", "secret",
-        "api key", "apikey", "cookie", "session", "credit", "card", "ssn"
-    )
-    if any(term in key_text for term in sensitive):
-        text = str(value)
-        if len(text) <= 4:
-            return "••••"
-        return text[:2] + "••••" + text[-2:]
     return value
 
 

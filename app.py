@@ -14,107 +14,91 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
 API_URL = os.getenv("API_URL", "https://leakosintapi.com/").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
+ADMIN_IDS = {x.strip() for x in os.getenv("ADMIN_IDS", "654083689").split(",") if x.strip()}
 MAX_QUERY_LENGTH = int(os.getenv("MAX_QUERY_LENGTH", "120"))
 API_LIMIT = min(max(int(os.getenv("API_LIMIT", "100")), 100), 10000)
 RATE_LIMIT_SECONDS = float(os.getenv("RATE_LIMIT_SECONDS", "3"))
-ADMIN_IDS = {x.strip() for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
-DB_PATH = os.getenv("ACCESS_DB", os.path.join(os.path.dirname(__file__), "access.db"))
+DB_PATH = os.path.join(os.path.dirname(__file__), "gwproject.db")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 _last_request = {}
 _rate_lock = Lock()
 _db_lock = Lock()
-_pending_admin = {}
 
-PERMISSIONS = {
-    "search": "🔎 Pencarian",
-    "ai": "🧠 AI Analysis",
-    "history": "📚 Riwayat",
-    "tools": "🧰 Tools",
-}
+PERMISSIONS = ("search", "ai", "history", "tools")
 
 
 def db():
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS users (
-            user_id TEXT PRIMARY KEY,
-            role TEXT NOT NULL DEFAULT 'user',
-            permissions TEXT NOT NULL DEFAULT '',
-            created_at INTEGER NOT NULL
-        )"""
-    )
-    conn.commit()
     return conn
 
 
-def get_user(user_id):
+def init_db():
     with _db_lock:
         conn = db()
-        row = conn.execute("SELECT * FROM users WHERE user_id = ?", (str(user_id),)).fetchone()
+        conn.execute("CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY, role TEXT NOT NULL DEFAULT 'user', permissions TEXT NOT NULL DEFAULT '')")
+        conn.execute("CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, action TEXT, created_at INTEGER)")
+        for uid in ADMIN_IDS:
+            conn.execute("INSERT INTO users(user_id, role, permissions) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET role='admin'", (uid, "admin", ",".join(PERMISSIONS)))
+        conn.commit()
+        conn.close()
+
+
+def get_user(user_id):
+    uid = str(user_id)
+    with _db_lock:
+        conn = db()
+        row = conn.execute("SELECT * FROM users WHERE user_id=?", (uid,)).fetchone()
+        if not row:
+            conn.execute("INSERT INTO users(user_id, role, permissions) VALUES(?,?,?)", (uid, "user", ""))
+            conn.commit()
+            row = conn.execute("SELECT * FROM users WHERE user_id=?", (uid,)).fetchone()
         conn.close()
     return row
 
 
-def ensure_user(user_id):
-    if str(user_id) in ADMIN_IDS:
-        return
-    if not get_user(user_id):
-        with _db_lock:
-            conn = db()
-            conn.execute(
-                "INSERT OR IGNORE INTO users(user_id, role, permissions, created_at) VALUES (?, 'user', '', ?)",
-                (str(user_id), int(time.time())),
-            )
-            conn.commit()
-            conn.close()
+def is_admin(user_id):
+    return str(user_id) in ADMIN_IDS or get_user(user_id)["role"] == "admin"
 
 
 def has_permission(user_id, permission):
-    if str(user_id) in ADMIN_IDS:
+    if is_admin(user_id):
         return True
     row = get_user(user_id)
-    if not row:
-        return False
-    permissions = {p for p in row["permissions"].split(",") if p}
-    return permission in permissions
+    return permission in [p for p in row["permissions"].split(",") if p]
 
 
 def set_permission(user_id, permission, enabled):
-    if str(user_id) in ADMIN_IDS:
-        return
-    ensure_user(user_id)
-    row = get_user(user_id)
-    permissions = {p for p in row["permissions"].split(",") if p}
+    uid = str(user_id)
+    row = get_user(uid)
+    perms = {p for p in row["permissions"].split(",") if p}
     if enabled:
-        permissions.add(permission)
+        perms.add(permission)
     else:
-        permissions.discard(permission)
-    value = ",".join(sorted(permissions))
+        perms.discard(permission)
     with _db_lock:
         conn = db()
-        conn.execute("UPDATE users SET permissions = ? WHERE user_id = ?", (value, str(user_id)))
+        conn.execute("UPDATE users SET permissions=? WHERE user_id=?", (",".join(sorted(perms)), uid))
         conn.commit()
         conn.close()
 
 
-def remove_user(user_id):
-    if str(user_id) in ADMIN_IDS:
-        return
+def set_role(user_id, role):
+    uid = str(user_id)
     with _db_lock:
         conn = db()
-        conn.execute("DELETE FROM users WHERE user_id = ?", (str(user_id),))
+        conn.execute("UPDATE users SET role=? WHERE user_id=?", (role, uid))
         conn.commit()
         conn.close()
 
 
-def list_users():
+def audit(user_id, action):
     with _db_lock:
         conn = db()
-        rows = conn.execute("SELECT * FROM users ORDER BY created_at DESC").fetchall()
+        conn.execute("INSERT INTO audit(user_id, action, created_at) VALUES(?,?,?)", (str(user_id), action, int(time.time())))
+        conn.commit()
         conn.close()
-    return rows
 
 
 def telegram(method, payload):
@@ -123,95 +107,72 @@ def telegram(method, payload):
     return response.json()
 
 
-def send_message(chat_id, text, keyboard=None):
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }
-    if keyboard:
-        payload["reply_markup"] = {"inline_keyboard": keyboard}
+def send_message(chat_id, text, markup=None):
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    if markup:
+        payload["reply_markup"] = markup
     return telegram("sendMessage", payload)
 
 
-def answer_callback(callback_id):
-    try:
-        telegram("answerCallbackQuery", {"callback_query_id": callback_id})
-    except Exception:
-        pass
+def edit_message(chat_id, message_id, text, markup=None):
+    payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    if markup is not None:
+        payload["reply_markup"] = markup
+    return telegram("editMessageText", payload)
 
 
-def main_keyboard(user_id):
-    rows = []
-    first = []
-    if has_permission(user_id, "tools"):
-        first.append({"text": "🧰 ALL TOOLS", "callback_data": "menu:tools"})
-    if has_permission(user_id, "ai"):
-        first.append({"text": "🧠 AI ANALYSIS", "callback_data": "menu:ai"})
-    if first:
-        rows.append(first)
-    if has_permission(user_id, "history"):
-        rows.append([{"text": "📚 RIWAYAT", "callback_data": "menu:history"}])
-    if str(user_id) in ADMIN_IDS:
-        rows.append([
-            {"text": "⚙️ PENGATURAN", "callback_data": "menu:settings"},
-            {"text": "ℹ️ STATUS", "callback_data": "menu:status"},
-        ])
-    else:
-        rows.append([{"text": "ℹ️ STATUS", "callback_data": "menu:status"}])
-    return rows
+def answer_callback(callback_id, text=""):
+    telegram("answerCallbackQuery", {"callback_query_id": callback_id, "text": text})
 
 
-def welcome_text():
-    return (
-        "🛰️ <b>GW-PROJECT</b>\n"
-        "<b>Private operations console</b>\n\n"
-        "Pilih layanan dari menu di bawah.\n"
-        "Setiap request dicatat untuk audit dan hanya memakai konektor yang diotorisasi."
-    )
+def button(text, data):
+    return {"text": text, "callback_data": data}
 
 
-def settings_keyboard():
-    return [
-        [{"text": "➕ TAMBAH PENGGUNA", "callback_data": "settings:add"}],
-        [{"text": "👥 DAFTAR PENGGUNA", "callback_data": "settings:list"}],
-        [{"text": "🚫 CABUT AKSES", "callback_data": "settings:revoke"}],
-        [{"text": "🔐 KELOLA HAK AKSES", "callback_data": "settings:permissions"}],
-        [{"text": "🔙 KEMBALI", "callback_data": "menu:home"}],
+def main_menu(user_id):
+    rows = [
+        [button("🧰 ALL TOOLS", "tools"), button("🧠 AI ANALYSIS", "ai")],
+        [button("📚 RIWAYAT", "history")],
     ]
+    if is_admin(user_id):
+        rows.append([button("⚙️ PENGATURAN", "settings"), button("ℹ️ STATUS", "status")])
+    else:
+        rows.append([button("ℹ️ STATUS", "status")])
+    return {"inline_keyboard": rows}
 
 
-def user_permission_keyboard(user_id):
-    row = get_user(user_id)
-    if not row:
-        return [[{"text": "🔙 KEMBALI", "callback_data": "menu:settings"}]]
-    active = {p for p in row["permissions"].split(",") if p}
-    buttons = []
-    for key, label in PERMISSIONS.items():
-        prefix = "✅" if key in active else "⬜"
-        buttons.append({"text": f"{prefix} {label}", "callback_data": f"perm:{user_id}:{key}"})
-    return [buttons[:2], buttons[2:], [{"text": "🔙 KEMBALI", "callback_data": "menu:settings"}]]
+def tools_menu(user_id):
+    if not has_permission(user_id, "tools"):
+        return {"inline_keyboard": [[button("🔒 AKSES DITOLAK", "denied")], [button("🔙 KEMBALI", "home")]]}
+    return {"inline_keyboard": [
+        [button("🔎 PENCARIAN", "search")],
+        [button("📊 ANALISIS DATA", "ai")],
+        [button("🔙 KEMBALI", "home")],
+    ]}
+
+
+def settings_menu():
+    return {"inline_keyboard": [
+        [button("👥 DAFTAR PENGGUNA", "users")],
+        [button("➕ / GRANT AKSES", "grant_help")],
+        [button("🚫 / REVOKE AKSES", "revoke_help")],
+        [button("👑 / ROLE", "role_help")],
+        [button("🔙 KEMBALI", "home")],
+    ]}
 
 
 def detect_query_type(query):
     value = query.strip()
-    if re.fullmatch(r"\+?[0-9][0-9 .()-]{7,19}", value):
-        return "Nomor HP"
-    if re.fullmatch(r"[0-9]{16}", value):
-        return "NIK"
-    if re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
-        return "Email"
-    if re.fullmatch(r"@?[A-Za-z0-9_.-]{3,64}", value):
-        return "Username"
+    if re.fullmatch(r"\+?[0-9][0-9 .()-]{7,19}", value): return "Nomor HP"
+    if re.fullmatch(r"[0-9]{16}", value): return "NIK"
+    if re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value): return "Email"
+    if re.fullmatch(r"@?[A-Za-z0-9_.-]{3,64}", value): return "Username"
     return "Nama"
 
 
 def allowed_query(query):
-    if not query or len(query) > MAX_QUERY_LENGTH:
-        return False
-    if any(ch in query for ch in ["\n", "\r", "<", ">"]):
-        return False
+    if not query or len(query) > MAX_QUERY_LENGTH: return False
+    if any(ch in query for ch in ["\n", "\r", "<", ">"]): return False
     return bool(re.fullmatch(r"[A-Za-z0-9@+_.()\- /]{3,120}", query))
 
 
@@ -219,268 +180,134 @@ def rate_allowed(user_id):
     now = time.monotonic()
     with _rate_lock:
         previous = _last_request.get(user_id, 0)
-        if now - previous < RATE_LIMIT_SECONDS:
-            return False
+        if now - previous < RATE_LIMIT_SECONDS: return False
         _last_request[user_id] = now
     return True
 
 
 def query_api(query):
-    payload = {
-        "token": API_TOKEN,
-        "request": query,
-        "limit": API_LIMIT,
-        "lang": os.getenv("API_LANG", "en"),
-        "type": "json",
-    }
+    payload = {"token": API_TOKEN, "request": query, "limit": API_LIMIT, "lang": os.getenv("API_LANG", "en"), "type": "json"}
     response = requests.post(API_URL, json=payload, timeout=60)
     response.raise_for_status()
     return response.json()
 
 
 def _pretty_key(key):
-    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", str(key))
-    text = text.replace("_", " ").replace("-", " ")
+    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", str(key)).replace("_", " ").replace("-", " ")
     return " ".join(text.split()).title()
 
 
 def _compact_value(value):
     if isinstance(value, dict):
-        return " | ".join(
-            f"{_pretty_key(key)}: {item}"
-            for key, item in value.items()
-            if item not in (None, "", [], {})
-        )
-    if isinstance(value, list):
-        return ", ".join(str(item) for item in value)
+        return " | ".join(f"{_pretty_key(k)}: {v}" for k, v in value.items() if v not in (None, "", [], {}))
+    if isinstance(value, list): return ", ".join(str(v) for v in value)
     return value
 
 
 def _plain_value(value):
-    if isinstance(value, (dict, list)):
-        value = _compact_value(value)
+    if isinstance(value, (dict, list)): value = _compact_value(value)
     return str(value).replace("\r", " ").replace("\n", " ").strip()
 
 
 def _format_record(record, number):
     lines = [f"📄 RECORD #{number}", "────────────────────────────────"]
     if isinstance(record, dict):
-        fields = []
-        for key, value in record.items():
-            if value in (None, "", [], {}):
-                continue
-            fields.append((_pretty_key(key), _plain_value(value)))
-        width = min(max((len(key) for key, _ in fields), default=10), 22)
-        for key, value in fields:
-            lines.append(f"{key:<{width}} : {value}")
-    else:
-        lines.append(f"Value{' ':<15}: {_plain_value(record)}")
+        fields = [(_pretty_key(k), _plain_value(v)) for k, v in record.items() if v not in (None, "", [], {})]
+        width = min(max((len(k) for k, _ in fields), default=10), 22)
+        for key, value in fields: lines.append(f"{key:<{width}} : {value}")
+    else: lines.append(f"Value{' ':<15}: {_plain_value(record)}")
     return "\n".join(lines)
 
 
 def format_simple_result(query, result):
-    if not isinstance(result, dict):
-        return ["❌ Data tidak dapat ditampilkan."]
-    if result.get("Error code"):
-        return ["❌ Pencarian gagal. Silakan coba lagi."]
+    if not isinstance(result, dict): return ["❌ Data tidak dapat ditampilkan."]
+    if result.get("Error code"): return ["❌ Pencarian gagal. Silakan coba lagi."]
     listing = result.get("List")
-    if not isinstance(listing, dict):
-        return ["<b>GWPROJECT RESULT</b>\n\nTidak ada data ditemukan."]
-
-    sources = []
-    total_records = 0
+    if not isinstance(listing, dict): return ["<b>GWPROJECT RESULT</b>\n\nTidak ada data ditemukan."]
+    sources, total = [], 0
     for source_name, source_data in listing.items():
-        if str(source_name).lower() == "no results found":
-            continue
+        if str(source_name).lower() == "no results found": continue
         records = source_data if isinstance(source_data, list) else [source_data]
         records = [r for r in records if r not in (None, "", [], {})]
-        if records:
-            sources.append((str(source_name), records))
-            total_records += len(records)
-
-    if not sources:
-        return ["<b>GWPROJECT RESULT</b>\n\nTidak ada data ditemukan."]
-
-    header = (
-        "<b>╔══════════════════════════════════╗</b>\n"
-        "<b>║          GWPROJECT RESULT        ║</b>\n"
-        "<b>╚══════════════════════════════════╝</b>\n\n"
-        "🔎 <b>QUERY</b>\n"
-        f"<code>{html.escape(detect_query_type(query))}  {html.escape(query)}</code>\n\n"
-    )
-    chunks = []
-    current = header
-    record_no = 0
+        if records: sources.append((str(source_name), records)); total += len(records)
+    if not sources: return ["<b>GWPROJECT RESULT</b>\n\nTidak ada data ditemukan."]
+    header = ("<b>╔══════════════════════════════════╗</b>\n<b>║          GWPROJECT RESULT        ║</b>\n<b>╚══════════════════════════════════╝</b>\n\n" + f"🔎 <b>QUERY</b>\n<code>{html.escape(detect_query_type(query))}  {html.escape(query)}</code>\n\n")
+    chunks, current, record_no = [], header, 0
     for source_index, (source_name, records) in enumerate(sources, 1):
-        source_block = (
-            f"📁 <b>SOURCE #{source_index}</b>\n"
-            f"<code>{html.escape(source_name)}</code>\n\n"
-        )
-        if len(current) + len(source_block) > 3800 and current != header:
-            chunks.append(current.rstrip())
-            current = ""
-        current += source_block
+        block = f"📁 <b>SOURCE #{source_index}</b>\n<code>{html.escape(source_name)}</code>\n\n"
+        if len(current) + len(block) > 3800 and current != header: chunks.append(current.rstrip()); current = ""
+        current += block
         for record in records:
             record_no += 1
-            record_block = f"<pre>{html.escape(_format_record(record, record_no))}</pre>\n\n"
-            if len(current) + len(record_block) > 3800 and current:
-                chunks.append(current.rstrip())
-                current = ""
-            current += record_block
-    summary = (
-        "📊 <b>SUMMARY</b>\n"
-        "────────────────────────────────\n"
-        f"Sources : {len(sources)}\n"
-        f"Records : {total_records}"
-    )
-    if len(current) + len(summary) > 3900 and current:
-        chunks.append(current.rstrip())
-        current = ""
-    current += summary
-    chunks.append(current.rstrip())
+            block = f"<pre>{html.escape(_format_record(record, record_no))}</pre>\n\n"
+            if len(current) + len(block) > 3800 and current: chunks.append(current.rstrip()); current = ""
+            current += block
+    summary = f"📊 <b>SUMMARY</b>\n────────────────────────────────\nSources : {len(sources)}\nRecords : {total}"
+    if len(current) + len(summary) > 3900 and current: chunks.append(current.rstrip()); current = ""
+    current += summary; chunks.append(current.rstrip())
     return chunks
 
 
-def handle_callback(callback):
-    callback_id = callback.get("id")
-    data = callback.get("data", "")
-    message = callback.get("message") or {}
-    chat = message.get("chat") or {}
-    user = callback.get("from") or {}
-    chat_id = chat.get("id")
-    user_id = user.get("id", chat_id)
-    answer_callback(callback_id)
+def status_text(user_id):
+    row = get_user(user_id)
+    role = "ADMIN" if is_admin(user_id) else row["role"].upper()
+    perms = "Semua akses" if role == "ADMIN" else (", ".join(row["permissions"].split(",")) or "Belum ada akses")
+    return f"ℹ️ <b>STATUS GWPROJECT</b>\n\n👤 ID: <code>{user_id}</code>\n🛡️ Role: <b>{role}</b>\n🔐 Akses: <b>{html.escape(perms)}</b>"
 
-    if not chat_id:
-        return
 
-    if data == "menu:home":
-        send_message(chat_id, welcome_text(), main_keyboard(user_id))
-        return
+def users_text():
+    with _db_lock:
+        conn = db(); rows = conn.execute("SELECT user_id, role, permissions FROM users ORDER BY rowid DESC LIMIT 30").fetchall(); conn.close()
+    lines = ["👥 <b>DAFTAR PENGGUNA</b>", ""]
+    for row in rows:
+        role = "ADMIN" if row["role"] == "admin" else row["role"].upper()
+        perms = "semua" if role == "ADMIN" else (row["permissions"] or "-")
+        lines.append(f"<code>{html.escape(row['user_id'])}</code> · <b>{role}</b> · {html.escape(perms)}")
+    return "\n".join(lines)
 
-    if data == "menu:status":
-        role = "ADMIN" if str(user_id) in ADMIN_IDS else (get_user(user_id)["role"].upper() if get_user(user_id) else "NONE")
-        permissions = "FULL" if str(user_id) in ADMIN_IDS else ", ".join(
-            PERMISSIONS[p] for p in PERMISSIONS if has_permission(user_id, p)
-        ) or "Tidak ada"
-        send_message(chat_id, f"ℹ️ <b>STATUS</b>\n\nRole: <b>{html.escape(role)}</b>\nAkses: {html.escape(permissions)}", [[{"text": "🔙 KEMBALI", "callback_data": "menu:home"}]])
-        return
 
-    if data == "menu:settings":
-        if str(user_id) not in ADMIN_IDS:
-            send_message(chat_id, "⛔ Akses admin diperlukan.")
-            return
-        send_message(chat_id, "⚙️ <b>PENGATURAN AKSES</b>\n\nKelola pengguna dan hak akses.", settings_keyboard())
-        return
-
-    if data == "settings:add":
-        if str(user_id) not in ADMIN_IDS:
-            return
-        _pending_admin[user_id] = "add"
-        send_message(chat_id, "➕ <b>TAMBAH PENGGUNA</b>\n\nKirim Telegram User ID yang ingin diberi akses.\n\nContoh: <code>123456789</code>", [[{"text": "❌ BATAL", "callback_data": "settings:cancel"}]])
-        return
-
-    if data == "settings:list":
-        if str(user_id) not in ADMIN_IDS:
-            return
-        rows = list_users()
-        if not rows:
-            text = "👥 <b>DAFTAR PENGGUNA</b>\n\nBelum ada pengguna terdaftar."
-        else:
-            items = []
-            for row in rows:
-                perms = [PERMISSIONS[p] for p in PERMISSIONS if p in row["permissions"].split(",")]
-                items.append(f"👤 <code>{html.escape(row['user_id'])}</code>\nRole: {html.escape(row['role'])}\nAkses: {html.escape(', '.join(perms) or 'Tidak ada')}")
-            text = "👥 <b>DAFTAR PENGGUNA</b>\n\n" + "\n\n".join(items)
-        send_message(chat_id, text, [[{"text": "🔙 KEMBALI", "callback_data": "menu:settings"}]])
-        return
-
-    if data == "settings:permissions":
-        if str(user_id) not in ADMIN_IDS:
-            return
-        rows = list_users()
-        if not rows:
-            send_message(chat_id, "Belum ada pengguna. Tambahkan pengguna terlebih dahulu.", [[{"text": "🔙 KEMBALI", "callback_data": "menu:settings"}]])
-            return
-        keyboard = [[{"text": f"👤 {row['user_id']}", "callback_data": f"settings:user:{row['user_id']}"}] for row in rows]
-        keyboard.append([{"text": "🔙 KEMBALI", "callback_data": "menu:settings"}])
-        send_message(chat_id, "🔐 <b>KELOLA HAK AKSES</b>\n\nPilih pengguna:", keyboard)
-        return
-
-    if data.startswith("settings:user:"):
-        if str(user_id) not in ADMIN_IDS:
-            return
-        target = data.split(":", 2)[2]
-        row = get_user(target)
-        if not row:
-            send_message(chat_id, "Pengguna tidak ditemukan.")
-            return
-        send_message(chat_id, f"🔐 <b>HAK AKSES</b>\n\nUser ID: <code>{html.escape(target)}</code>\nRole: <b>{html.escape(row['role'])}</b>\n\nTekan tombol untuk mengaktifkan/nonaktifkan akses.", user_permission_keyboard(target))
-        return
-
-    if data.startswith("perm:"):
-        if str(user_id) not in ADMIN_IDS:
-            return
-        parts = data.split(":")
-        if len(parts) != 3 or parts[2] not in PERMISSIONS:
-            return
-        target, permission = parts[1], parts[2]
-        row = get_user(target)
-        if not row:
-            return
-        active = permission in {p for p in row["permissions"].split(",") if p}
-        set_permission(target, permission, not active)
-        send_message(chat_id, f"🔐 Akses <b>{html.escape(PERMISSIONS[permission])}</b> untuk <code>{html.escape(target)}</code> {'diaktifkan' if not active else 'dinonaktifkan'}.", user_permission_keyboard(target))
-        return
-
-    if data == "settings:revoke":
-        if str(user_id) not in ADMIN_IDS:
-            return
-        rows = list_users()
-        keyboard = [[{"text": f"🚫 {row['user_id']}", "callback_data": f"revoke:{row['user_id']}"}] for row in rows]
-        keyboard.append([{"text": "🔙 KEMBALI", "callback_data": "menu:settings"}])
-        send_message(chat_id, "🚫 <b>CABUT AKSES</b>\n\nPilih pengguna:", keyboard)
-        return
-
-    if data.startswith("revoke:"):
-        if str(user_id) not in ADMIN_IDS:
-            return
-        target = data.split(":", 1)[1]
-        remove_user(target)
-        send_message(chat_id, f"✅ Akses untuk <code>{html.escape(target)}</code> telah dicabut.", settings_keyboard())
-        return
-
-    if data == "settings:cancel":
-        _pending_admin.pop(user_id, None)
-        send_message(chat_id, "Dibatalkan.", settings_keyboard())
-        return
-
-    if data == "menu:ai":
-        if not has_permission(user_id, "ai"):
-            send_message(chat_id, "⛔ Anda tidak memiliki akses AI Analysis.")
-            return
-        send_message(chat_id, "🧠 <b>AI ANALYSIS</b>\n\nFitur AI siap dikembangkan.", [[{"text": "🔙 KEMBALI", "callback_data": "menu:home"}]])
-        return
-
-    if data == "menu:history":
-        if not has_permission(user_id, "history"):
-            send_message(chat_id, "⛔ Anda tidak memiliki akses Riwayat.")
-            return
-        send_message(chat_id, "📚 <b>RIWAYAT</b>\n\nRiwayat request dapat ditampilkan di sini.", [[{"text": "🔙 KEMBALI", "callback_data": "menu:home"}]])
-        return
-
-    if data == "menu:tools":
-        if not has_permission(user_id, "tools"):
-            send_message(chat_id, "⛔ Anda tidak memiliki akses Tools.")
-            return
-        send_message(chat_id, "🧰 <b>ALL TOOLS</b>\n\nPilih tool yang diizinkan admin.", [[{"text": "🔎 PENCARIAN", "callback_data": "tool:search"}], [{"text": "🔙 KEMBALI", "callback_data": "menu:home"}]])
-        return
-
-    if data == "tool:search":
-        if not has_permission(user_id, "search"):
-            send_message(chat_id, "⛔ Anda tidak memiliki akses Pencarian.")
-            return
-        send_message(chat_id, "🔎 Gunakan perintah <code>/cek ...</code> untuk pencarian.", [[{"text": "🔙 KEMBALI", "callback_data": "menu:home"}]])
+def callback_handler(cb):
+    callback_id = cb.get("id", "")
+    data = cb.get("data", "")
+    user = cb.get("from") or {}
+    uid = user.get("id")
+    message = cb.get("message") or {}
+    chat_id = (message.get("chat") or {}).get("id")
+    message_id = message.get("message_id")
+    get_user(uid)
+    try:
+        answer_callback(callback_id)
+        if data == "home":
+            edit_message(chat_id, message_id, "<b>🛰️ GW-PROJECT</b>\n\nPrivate operations console\n\nPilih layanan dari menu di bawah.", main_menu(uid))
+        elif data == "tools":
+            edit_message(chat_id, message_id, "<b>🧰 ALL TOOLS</b>\n\nPilih layanan yang tersedia.", tools_menu(uid))
+        elif data == "ai":
+            if not has_permission(uid, "ai"): edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses AI Analysis.", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
+            else: edit_message(chat_id, message_id, "🧠 <b>AI ANALYSIS</b>\n\nFitur AI siap digunakan pada modul berikutnya.", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
+        elif data == "search":
+            if not has_permission(uid, "search"): edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses Pencarian.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
+            else: edit_message(chat_id, message_id, "🔎 <b>PENCARIAN</b>\n\nKirim perintah <code>/cek kata_pencarian</code> untuk memulai.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
+        elif data == "history":
+            if not has_permission(uid, "history"): edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses Riwayat.", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
+            else: edit_message(chat_id, message_id, "📚 <b>RIWAYAT</b>\n\nAktivitas Anda tercatat untuk audit. Detail pencarian sensitif tidak ditampilkan di menu riwayat.", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
+        elif data == "settings":
+            if not is_admin(uid): edit_message(chat_id, message_id, "🔒 Akses admin diperlukan.", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
+            else: edit_message(chat_id, message_id, "⚙️ <b>PENGATURAN AKSES</b>\n\nKelola pengguna dan izin dari menu ini.\n\nContoh:\n<code>/grant 123456789 search</code>\n<code>/revoke 123456789 search</code>\n<code>/role 123456789 operator</code>", settings_menu())
+        elif data == "users":
+            if not is_admin(uid): return
+            edit_message(chat_id, message_id, users_text(), {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
+        elif data == "grant_help":
+            edit_message(chat_id, message_id, "➕ <b>GRANT AKSES</b>\n\n<code>/grant USER_ID search</code>\n<code>/grant USER_ID ai</code>\n<code>/grant USER_ID history</code>\n<code>/grant USER_ID tools</code>", {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
+        elif data == "revoke_help":
+            edit_message(chat_id, message_id, "🚫 <b>REVOKE AKSES</b>\n\n<code>/revoke USER_ID search</code>\n<code>/revoke USER_ID ai</code>\n<code>/revoke USER_ID history</code>\n<code>/revoke USER_ID tools</code>", {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
+        elif data == "role_help":
+            edit_message(chat_id, message_id, "👑 <b>ROLE</b>\n\n<code>/role USER_ID admin</code>\n<code>/role USER_ID operator</code>\n<code>/role USER_ID user</code>", {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
+        elif data == "status":
+            edit_message(chat_id, message_id, status_text(uid), {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
+        elif data == "denied":
+            answer_callback(callback_id, "Akses belum diberikan")
+    except requests.RequestException:
+        pass
 
 
 @app.get("/")
@@ -490,16 +317,11 @@ def home():
 
 @app.post("/webhook")
 def webhook():
-    if WEBHOOK_SECRET:
-        provided = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-        if provided != WEBHOOK_SECRET:
-            return jsonify({"ok": False}), 403
-
+    if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token", "") != WEBHOOK_SECRET:
+        return jsonify({"ok": False}), 403
     update = request.get_json(silent=True) or {}
-
-    callback = update.get("callback_query")
-    if callback:
-        handle_callback(callback)
+    if update.get("callback_query"):
+        callback_handler(update["callback_query"])
         return jsonify({"ok": True})
 
     message = update.get("message") or {}
@@ -508,64 +330,64 @@ def webhook():
     chat_id = chat.get("id")
     user_id = user.get("id", chat_id)
     text = (message.get("text") or "").strip()
-
-    if not chat_id or not text:
-        return jsonify({"ok": True})
-
-    if str(user_id) in ADMIN_IDS and _pending_admin.get(user_id) == "add":
-        if not re.fullmatch(r"\d{3,20}", text):
-            send_message(chat_id, "❌ User ID tidak valid. Kirim angka Telegram User ID.")
-            return jsonify({"ok": True})
-        ensure_user(text)
-        _pending_admin.pop(user_id, None)
-        send_message(chat_id, f"✅ Pengguna <code>{html.escape(text)}</code> ditambahkan.\n\nSekarang pilih hak akses:", [[{"text": "🔐 KELOLA HAK AKSES", "callback_data": "settings:permissions"}], [{"text": "🔙 PENGATURAN", "callback_data": "menu:settings"}]])
-        return jsonify({"ok": True})
-
-    if text.startswith("/start") or text == "/menu":
-        ensure_user(user_id)
-        send_message(chat_id, welcome_text(), main_keyboard(user_id))
-        return jsonify({"ok": True})
+    if not chat_id or not text: return jsonify({"ok": True})
+    get_user(user_id)
 
     if text == "/id":
-        send_message(chat_id, f"🆔 Telegram User ID Anda: <code>{html.escape(str(user_id))}</code>")
+        send_message(chat_id, f"🆔 Telegram User ID Anda:\n\n<code>{user_id}</code>\n\nRole: <b>{'ADMIN' if is_admin(user_id) else get_user(user_id)['role'].upper()}</b>")
         return jsonify({"ok": True})
 
-    if text.startswith("/settings"):
-        if str(user_id) not in ADMIN_IDS:
-            send_message(chat_id, "⛔ Akses admin diperlukan.")
-            return jsonify({"ok": True})
-        send_message(chat_id, "⚙️ <b>PENGATURAN AKSES</b>\n\nKelola pengguna dan hak akses.", settings_keyboard())
+    if text.startswith("/start"):
+        send_message(chat_id, "<b>🛰️ GW-PROJECT</b>\n\nPrivate operations console\n\nPilih layanan dari menu di bawah.\nSetiap request dicatat untuk audit dan akses dikontrol berdasarkan role/izin.", main_menu(user_id))
+        return jsonify({"ok": True})
+
+    if text.startswith("/grant ") or text.startswith("/revoke "):
+        if not is_admin(user_id):
+            send_message(chat_id, "🔒 Akses admin diperlukan."); return jsonify({"ok": True})
+        parts = text.split()
+        if len(parts) != 3 or parts[2] not in PERMISSIONS:
+            send_message(chat_id, "Format: <code>/grant USER_ID search</code>\nAkses: search, ai, history, tools"); return jsonify({"ok": True})
+        target, perm = parts[1], parts[2]
+        get_user(target); set_permission(target, perm, text.startswith("/grant"))
+        send_message(chat_id, f"{'✅ Akses diberikan' if text.startswith('/grant') else '🚫 Akses dicabut'}\nUser: <code>{html.escape(target)}</code>\nAkses: <b>{perm}</b>")
+        return jsonify({"ok": True})
+
+    if text.startswith("/role "):
+        if not is_admin(user_id): send_message(chat_id, "🔒 Akses admin diperlukan."); return jsonify({"ok": True})
+        parts = text.split()
+        if len(parts) != 3 or parts[2] not in ("admin", "operator", "user"):
+            send_message(chat_id, "Format: <code>/role USER_ID admin|operator|user</code>"); return jsonify({"ok": True})
+        target, role = parts[1], parts[2]
+        get_user(target); set_role(target, role)
+        send_message(chat_id, f"✅ Role <b>{role.upper()}</b> diberikan ke <code>{html.escape(target)}</code>")
+        return jsonify({"ok": True})
+
+    if text.startswith("/users"):
+        if is_admin(user_id): send_message(chat_id, users_text())
+        else: send_message(chat_id, "🔒 Akses admin diperlukan.")
         return jsonify({"ok": True})
 
     if text.startswith("/cek"):
         if not has_permission(user_id, "search"):
-            send_message(chat_id, "⛔ Anda belum memiliki akses Pencarian. Hubungi admin untuk mendapatkan akses.")
-            return jsonify({"ok": True})
-
+            send_message(chat_id, "🔒 <b>Akses Pencarian belum diberikan.</b>\nHubungi admin untuk mendapatkan izin."); return jsonify({"ok": True})
         query = text[4:].strip()
-        if not allowed_query(query):
-            send_message(chat_id, "❌ Format pencarian tidak valid.")
-            return jsonify({"ok": True})
-        if not rate_allowed(user_id):
-            send_message(chat_id, "⏱️ Tunggu beberapa detik sebelum pencarian berikutnya.")
-            return jsonify({"ok": True})
-
+        if not allowed_query(query): send_message(chat_id, "❌ Format pencarian tidak valid."); return jsonify({"ok": True})
+        if not rate_allowed(user_id): send_message(chat_id, "⏱️ Tunggu beberapa detik sebelum pencarian berikutnya."); return jsonify({"ok": True})
+        audit(user_id, "search")
         send_message(chat_id, "🔎 <b>Mencari...</b>")
         try:
             result = query_api(query)
-            for chunk in format_simple_result(query, result):
-                send_message(chat_id, chunk)
-        except requests.RequestException:
-            send_message(chat_id, "❌ Server tidak dapat dihubungi.")
-        except (ValueError, TypeError):
-            send_message(chat_id, "❌ Respons server tidak valid.")
-        except Exception:
-            send_message(chat_id, "❌ Terjadi kesalahan. Silakan coba lagi.")
+            for chunk in format_simple_result(query, result): send_message(chat_id, chunk)
+        except requests.RequestException: send_message(chat_id, "❌ Server tidak dapat dihubungi.")
+        except (ValueError, TypeError): send_message(chat_id, "❌ Respons server tidak valid.")
+        except Exception: send_message(chat_id, "❌ Terjadi kesalahan. Silakan coba lagi.")
         return jsonify({"ok": True})
 
-    send_message(chat_id, "Gunakan <code>/menu</code> untuk membuka menu utama atau <code>/id</code> untuk melihat Telegram User ID.", main_keyboard(user_id))
+    send_message(chat_id, "Gunakan <code>/start</code> untuk membuka menu.", main_menu(user_id))
     return jsonify({"ok": True})
 
+
+init_db()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")))

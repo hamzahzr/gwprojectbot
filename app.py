@@ -23,25 +23,18 @@ _rate_lock = Lock()
 
 
 def telegram(method, payload):
-    response = requests.post(
-        f"{TELEGRAM_API}/{method}",
-        json=payload,
-        timeout=30,
-    )
+    response = requests.post(f"{TELEGRAM_API}/{method}", json=payload, timeout=30)
     response.raise_for_status()
     return response.json()
 
 
 def send_message(chat_id, text):
-    return telegram(
-        "sendMessage",
-        {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-    )
+    return telegram("sendMessage", {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    })
 
 
 def detect_query_type(query):
@@ -56,7 +49,7 @@ def detect_query_type(query):
         return "username / identifier"
     if "." in value and " " not in value:
         return "domain / identifier"
-    return "identifier"
+    return "nama / identifier"
 
 
 def allowed_query(query):
@@ -90,70 +83,15 @@ def query_api(query):
     return response.json()
 
 
-SENSITIVE_KEYS = (
-    "nik", "ktp", "phone", "telephone", "tel", "mobile", "email",
-    "mail", "name", "fullname", "full_name", "address", "alamat",
-    "password", "passwd", "pass", "token", "secret", "cookie", "session",
-    "authorization", "api_key", "apikey", "dob", "birth", "birthday",
-    "username", "user_name", "login", "credit", "card", "account",
-)
-
-
-def is_sensitive_key(key):
-    normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
-    return any(term in normalized for term in SENSITIVE_KEYS)
-
-
-def mask_value(value):
-    text = str(value)
-    if len(text) <= 4:
-        return "••••"
-    if "@" in text:
-        local, domain = text.split("@", 1)
-        return (local[:1] + "••••@" + domain) if local else "••••@" + domain
-    if len(text) >= 8 and text.isdigit():
-        return text[:2] + "••••" + text[-2:]
-    return text[:2] + "••••" + text[-2:]
-
-
-def _safe_value(key, value):
-    if is_sensitive_key(key):
-        return mask_value(value)
-    if isinstance(value, dict):
-        return {str(k): _safe_value(k, v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_safe_value(key, item) if not isinstance(item, dict) else _safe_value("record", item) for item in value]
-    return value
-
-
-def _flatten_safe(value, prefix=""):
-    rows = []
-    if isinstance(value, dict):
-        for key, item in value.items():
-            path = f"{prefix}.{key}" if prefix else str(key)
-            rows.extend(_flatten_safe(item, path))
-    elif isinstance(value, list):
-        for index, item in enumerate(value, 1):
-            rows.extend(_flatten_safe(item, f"{prefix}[{index}]"))
-    else:
-        key = prefix.rsplit(".", 1)[-1].split("[", 1)[0]
-        display = mask_value(value) if is_sensitive_key(key) else str(value)
-        rows.append((prefix, display))
-    return rows
-
-
 def _split_telegram_text(text, max_length=3900):
     if len(text) <= max_length:
         return [text]
-    chunks = []
-    current = []
-    size = 0
+    chunks, current, size = [], [], 0
     for line in text.split("\n"):
         addition = len(line) + (1 if current else 0)
         if current and size + addition > max_length:
             chunks.append("\n".join(current))
-            current = [line]
-            size = len(line)
+            current, size = [line], len(line)
         else:
             current.append(line)
             size += addition
@@ -162,72 +100,55 @@ def _split_telegram_text(text, max_length=3900):
     return chunks
 
 
-def format_safe_result(query, result):
-    """Return a detailed exposure summary with sensitive values masked."""
+def _format_value(value, indent=0):
+    """Recursively render the API JSON into readable Telegram HTML."""
+    pad = "  " * indent
+    lines = []
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = html.escape(str(key))
+            if isinstance(item, (dict, list)):
+                lines.append(f"{pad}<b>▸ {key_text}</b>")
+                lines.extend(_format_value(item, indent + 1))
+            else:
+                value_text = html.escape(str(item))
+                lines.append(f"{pad}• <b>{key_text}:</b> <code>{value_text}</code>")
+    elif isinstance(value, list):
+        for index, item in enumerate(value, 1):
+            lines.append(f"{pad}<b>Record {index}</b>")
+            if isinstance(item, (dict, list)):
+                lines.extend(_format_value(item, indent + 1))
+            else:
+                lines.append(f"{pad}• <code>{html.escape(str(item))}</code>")
+    else:
+        lines.append(f"{pad}<code>{html.escape(str(value))}</code>")
+
+    return lines
+
+
+def format_result(query, result):
+    """Format the API response without changing its fields or values."""
     query_type = detect_query_type(query)
 
     if not isinstance(result, dict):
-        return ["⚠️ API mengembalikan format yang tidak dikenali."]
+        return ["❌ API mengembalikan format yang tidak dikenali."]
 
     if result.get("Error code"):
-        return ["⚠️ Pemeriksaan gagal karena API mengembalikan error."]
-
-    listing = result.get("List")
-    if not isinstance(listing, dict):
-        return [
-            "🔎 <b>GWPROJECT — EXPOSURE CHECK</b>\n\n"
-            f"Jenis: <b>{html.escape(query_type)}</b>\n"
-            f"Target: <code>{html.escape(query)}</code>\n"
-            "Status: ℹ️ Tidak ada hasil yang dapat ditampilkan."
-        ]
-
-    names = [str(name) for name in listing.keys() if str(name).lower() != "no results found"]
-    if not names:
-        return [
-            "🔎 <b>GWPROJECT — EXPOSURE CHECK</b>\n\n"
-            f"Jenis: <b>{html.escape(query_type)}</b>\n"
-            f"Target: <code>{html.escape(query)}</code>\n"
-            "Status: ✅ Tidak ada sumber yang terdeteksi oleh API."
-        ]
+        error = html.escape(str(result.get("Error code")))
+        return [f"❌ <b>API ERROR</b>\n\n<code>{error}</code>"]
 
     lines = [
-        "🔎 <b>GWPROJECT — EXPOSURE CHECK</b>",
+        "🔎 <b>GWPROJECT — HASIL PEMERIKSAAN</b>",
         "",
-        f"Jenis: <b>{html.escape(query_type)}</b>",
-        f"Target: <code>{html.escape(query)}</code>",
-        "Status: ⚠️ Sumber terdeteksi",
+        f"📌 Jenis: <b>{html.escape(query_type)}</b>",
+        f"🎯 Query: <code>{html.escape(query)}</code>",
         "",
     ]
 
-    total_records = 0
-    for source_name in names[:15]:
-        source_data = listing.get(source_name)
-        records = source_data if isinstance(source_data, list) else [source_data]
-        total_records += len(records)
-        lines.append(f"<b>📁 {html.escape(source_name)}</b> — {len(records)} record")
-
-        for index, record in enumerate(records[:20], 1):
-            lines.append(f"  <b>Record {index}</b>")
-            if isinstance(record, dict):
-                for key, value in _flatten_safe(record):
-                    lines.append(f"  • {html.escape(key)}: <code>{html.escape(value)}</code>")
-            else:
-                lines.append(f"  • value: <code>{html.escape(str(record))}</code>")
-        if len(records) > 20:
-            lines.append(f"  • +{len(records) - 20} record lain tidak ditampilkan")
-        lines.append("")
-
-    if len(names) > 15:
-        lines.append(f"• +{len(names) - 15} sumber lainnya")
-        lines.append("")
-
-    lines.extend([
-        f"📊 Total record yang diringkas: <b>{total_records}</b>",
-        "",
-        "🔐 <i>Field sensitif seperti NIK, nomor telepon, email, nama, username, alamat, password, token, dan kredensial dimasking.</i>",
-        "Gunakan hanya untuk data yang Anda miliki atau berwenang untuk audit.",
-    ])
-
+    # Render the complete JSON response, including nested objects and arrays.
+    lines.extend(_format_value(result))
+    lines.extend(["", "━━━━━━━━━━━━━━━━━━━━", "✅ Selesai"])
     return _split_telegram_text("\n".join(lines))
 
 
@@ -254,16 +175,15 @@ def webhook():
         return jsonify({"ok": True})
 
     if text.startswith("/start"):
-        send_message(
-            chat_id,
+        send_message(chat_id,
             "🛡️ <b>GWPROJECT DATA SECURITY</b>\n\n"
             "Bot aktif.\n\n"
-            "Gunakan satu perintah untuk memeriksa identifier yang Anda "
-            "miliki atau berwenang untuk audit:\n\n"
+            "Gunakan:\n"
             "<code>/cek 081234567890</code>\n"
             "<code>/cek user@example.com</code>\n"
             "<code>/cek @username</code>\n"
-            "<code>/cek 3201234567890001</code>",
+            "<code>/cek 3201234567890001</code>\n"
+            "<code>/cek Budi Santoso</code>"
         )
         return jsonify({"ok": True})
 
@@ -272,14 +192,10 @@ def webhook():
         user_id = user.get("id", chat_id)
 
         if not allowed_query(query):
-            send_message(
-                chat_id,
+            send_message(chat_id,
                 "❌ Format tidak valid atau terlalu panjang.\n\n"
-                "Contoh:\n"
-                "<code>/cek 081234567890</code>\n"
-                "<code>/cek user@example.com</code>\n"
-                "<code>/cek @username</code>\n"
-                "<code>/cek 3201234567890001</code>",
+                "Contoh: <code>/cek 081234567890</code> atau "
+                "<code>/cek Budi Santoso</code>"
             )
             return jsonify({"ok": True})
 
@@ -288,14 +204,11 @@ def webhook():
             return jsonify({"ok": True})
 
         query_type = detect_query_type(query)
-        send_message(
-            chat_id,
-            f"🔎 Memproses pemeriksaan <b>{html.escape(query_type)}</b>...",
-        )
+        send_message(chat_id, f"🔎 Memproses <b>{html.escape(query_type)}</b>...")
 
         try:
             result = query_api(query)
-            for chunk in format_safe_result(query, result):
+            for chunk in format_result(query, result):
                 send_message(chat_id, chunk)
         except requests.RequestException:
             send_message(chat_id, "❌ API tidak dapat dihubungi saat ini.")
@@ -306,14 +219,13 @@ def webhook():
 
         return jsonify({"ok": True})
 
-    send_message(
-        chat_id,
+    send_message(chat_id,
         "Perintah yang tersedia:\n\n"
         "🔎 <code>/cek nomor-telepon</code>\n"
         "🔎 <code>/cek email@example.com</code>\n"
         "🔎 <code>/cek @username</code>\n"
-        "🔎 <code>/cek NIK</code>\n\n"
-        "Gunakan hanya untuk data yang Anda miliki atau berwenang untuk audit.",
+        "🔎 <code>/cek NIK</code>\n"
+        "🔎 <code>/cek Nama Lengkap</code>"
     )
     return jsonify({"ok": True})
 

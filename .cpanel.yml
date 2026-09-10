@@ -1,0 +1,6 @@
+---
+deployment:
+  tasks:
+    - export APPPATH=/home/gwpe7134/gwprojectbot_app
+    - /bin/cp app.py $APPPATH/app.py
+    - /bin/cp requirements.txt $APPPATH/requirements.txt

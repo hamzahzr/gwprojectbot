@@ -40,16 +40,14 @@ def send_message(chat_id, text):
 def detect_query_type(query):
     value = query.strip()
     if re.fullmatch(r"\+?[0-9][0-9 .()-]{7,19}", value):
-        return "nomor telepon"
+        return "Nomor HP"
     if re.fullmatch(r"[0-9]{16}", value):
         return "NIK"
     if re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
-        return "email"
+        return "Email"
     if re.fullmatch(r"@?[A-Za-z0-9_.-]{3,64}", value):
-        return "username / identifier"
-    if "." in value and " " not in value:
-        return "domain / identifier"
-    return "nama / identifier"
+        return "Username"
+    return "Nama"
 
 
 def allowed_query(query):
@@ -83,73 +81,94 @@ def query_api(query):
     return response.json()
 
 
-def _split_telegram_text(text, max_length=3900):
+def split_message(text, max_length=3900):
     if len(text) <= max_length:
         return [text]
     chunks, current, size = [], [], 0
     for line in text.split("\n"):
-        addition = len(line) + (1 if current else 0)
-        if current and size + addition > max_length:
+        extra = len(line) + (1 if current else 0)
+        if current and size + extra > max_length:
             chunks.append("\n".join(current))
             current, size = [line], len(line)
         else:
             current.append(line)
-            size += addition
+            size += extra
     if current:
         chunks.append("\n".join(current))
     return chunks
 
 
-def _format_value(value, indent=0):
-    """Recursively render the API JSON into readable Telegram HTML."""
-    pad = "  " * indent
-    lines = []
-
-    if isinstance(value, dict):
-        for key, item in value.items():
-            key_text = html.escape(str(key))
-            if isinstance(item, (dict, list)):
-                lines.append(f"{pad}<b>▸ {key_text}</b>")
-                lines.extend(_format_value(item, indent + 1))
-            else:
-                value_text = html.escape(str(item))
-                lines.append(f"{pad}• <b>{key_text}:</b> <code>{value_text}</code>")
-    elif isinstance(value, list):
-        for index, item in enumerate(value, 1):
-            lines.append(f"{pad}<b>Record {index}</b>")
-            if isinstance(item, (dict, list)):
-                lines.extend(_format_value(item, indent + 1))
-            else:
-                lines.append(f"{pad}• <code>{html.escape(str(item))}</code>")
-    else:
-        lines.append(f"{pad}<code>{html.escape(str(value))}</code>")
-
-    return lines
-
-
-def format_result(query, result):
-    """Format the API response without changing its fields or values."""
-    query_type = detect_query_type(query)
-
+def format_simple_result(query, result):
+    """Simple human-readable output. No API/internal metadata is shown."""
     if not isinstance(result, dict):
-        return ["❌ API mengembalikan format yang tidak dikenali."]
+        return ["❌ Data tidak dapat ditampilkan."]
 
     if result.get("Error code"):
-        error = html.escape(str(result.get("Error code")))
-        return [f"❌ <b>API ERROR</b>\n\n<code>{error}</code>"]
+        return ["❌ Pencarian gagal. Silakan coba lagi."]
 
-    lines = [
-        "🔎 <b>GWPROJECT — HASIL PEMERIKSAAN</b>",
-        "",
-        f"📌 Jenis: <b>{html.escape(query_type)}</b>",
-        f"🎯 Query: <code>{html.escape(query)}</code>",
-        "",
-    ]
+    listing = result.get("List")
+    if not isinstance(listing, dict):
+        return ["🔎 <b>HASIL PENCARIAN</b>\n\nTidak ada data ditemukan."]
 
-    # Render the complete JSON response, including nested objects and arrays.
-    lines.extend(_format_value(result))
-    lines.extend(["", "━━━━━━━━━━━━━━━━━━━━", "✅ Selesai"])
-    return _split_telegram_text("\n".join(lines))
+    blocks = []
+    for source_name, source_data in listing.items():
+        if str(source_name).lower() == "no results found":
+            continue
+
+        records = source_data if isinstance(source_data, list) else [source_data]
+        for record in records:
+            if isinstance(record, dict):
+                fields = []
+                for key, value in record.items():
+                    if value in (None, "", [], {}):
+                        continue
+                    if isinstance(value, (dict, list)):
+                        value = _compact_value(value)
+                    fields.append(
+                        f"• <b>{html.escape(_pretty_key(key))}:</b> "
+                        f"<code>{html.escape(str(value))}</code>"
+                    )
+                if fields:
+                    blocks.append("\n".join(fields))
+            elif record not in (None, ""):
+                blocks.append(f"• <code>{html.escape(str(record))}</code>")
+
+    if not blocks:
+        return ["🔎 <b>HASIL PENCARIAN</b>\n\nTidak ada data ditemukan."]
+
+    header = (
+        "🔎 <b>HASIL PENCARIAN</b>\n"
+        f"{html.escape(detect_query_type(query))}: <code>{html.escape(query)}</code>\n\n"
+    )
+    chunks = []
+    current = header
+    for block in blocks:
+        addition = block + "\n\n"
+        if len(current) + len(addition) > 3800 and current != header:
+            chunks.append(current.rstrip())
+            current = ""
+        current += addition
+    if current.strip():
+        chunks.append(current.rstrip())
+    return chunks
+
+
+def _pretty_key(key):
+    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", str(key))
+    text = text.replace("_", " ").replace("-", " ")
+    return " ".join(text.split()).title()
+
+
+def _compact_value(value):
+    if isinstance(value, dict):
+        parts = []
+        for key, item in value.items():
+            if item not in (None, "", [], {}):
+                parts.append(f"{_pretty_key(key)}: {item}")
+        return " | ".join(parts)
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value)
+    return value
 
 
 @app.get("/")
@@ -176,9 +195,8 @@ def webhook():
 
     if text.startswith("/start"):
         send_message(chat_id,
-            "🛡️ <b>GWPROJECT DATA SECURITY</b>\n\n"
-            "Bot aktif.\n\n"
-            "Gunakan:\n"
+            "🔎 <b>GWPROJECT</b>\n\n"
+            "Gunakan perintah:\n\n"
             "<code>/cek 081234567890</code>\n"
             "<code>/cek user@example.com</code>\n"
             "<code>/cek @username</code>\n"
@@ -192,40 +210,35 @@ def webhook():
         user_id = user.get("id", chat_id)
 
         if not allowed_query(query):
-            send_message(chat_id,
-                "❌ Format tidak valid atau terlalu panjang.\n\n"
-                "Contoh: <code>/cek 081234567890</code> atau "
-                "<code>/cek Budi Santoso</code>"
-            )
+            send_message(chat_id, "❌ Format pencarian tidak valid.")
             return jsonify({"ok": True})
 
         if not rate_allowed(user_id):
-            send_message(chat_id, "⏱️ Tunggu beberapa detik sebelum melakukan pemeriksaan lagi.")
+            send_message(chat_id, "⏱️ Tunggu beberapa detik sebelum pencarian berikutnya.")
             return jsonify({"ok": True})
 
-        query_type = detect_query_type(query)
-        send_message(chat_id, f"🔎 Memproses <b>{html.escape(query_type)}</b>...")
+        send_message(chat_id, "🔎 <b>Mencari...</b>")
 
         try:
             result = query_api(query)
-            for chunk in format_result(query, result):
+            for chunk in format_simple_result(query, result):
                 send_message(chat_id, chunk)
         except requests.RequestException:
-            send_message(chat_id, "❌ API tidak dapat dihubungi saat ini.")
+            send_message(chat_id, "❌ Server tidak dapat dihubungi.")
         except (ValueError, TypeError):
-            send_message(chat_id, "❌ Respons API tidak valid.")
+            send_message(chat_id, "❌ Respons server tidak valid.")
         except Exception:
-            send_message(chat_id, "❌ Terjadi kesalahan internal.")
+            send_message(chat_id, "❌ Terjadi kesalahan. Silakan coba lagi.")
 
         return jsonify({"ok": True})
 
     send_message(chat_id,
-        "Perintah yang tersedia:\n\n"
-        "🔎 <code>/cek nomor-telepon</code>\n"
-        "🔎 <code>/cek email@example.com</code>\n"
-        "🔎 <code>/cek @username</code>\n"
-        "🔎 <code>/cek NIK</code>\n"
-        "🔎 <code>/cek Nama Lengkap</code>"
+        "Perintah:\n\n"
+        "<code>/cek nomor HP</code>\n"
+        "<code>/cek email</code>\n"
+        "<code>/cek username</code>\n"
+        "<code>/cek NIK</code>\n"
+        "<code>/cek nama lengkap</code>"
     )
     return jsonify({"ok": True})
 

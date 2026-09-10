@@ -82,7 +82,7 @@ def query_api(query):
 
 
 def format_simple_result(query, result):
-    """Render API results in a compact, structured Telegram layout."""
+    """Render results in a clean, structured Telegram layout."""
     if not isinstance(result, dict):
         return ["❌ Data tidak dapat ditampilkan."]
 
@@ -108,18 +108,22 @@ def format_simple_result(query, result):
         return ["🔎 <b>GWPROJECT RESULT</b>\n\nTidak ada data ditemukan."]
 
     header = (
-        "╔════════════════════════════════╗\n"
-        "║       <b>GWPROJECT RESULT</b>         ║\n"
-        "╚════════════════════════════════╝\n\n"
+        "<pre>╔══════════════════════════════════╗\n"
+        "║          GWPROJECT RESULT        ║\n"
+        "╚══════════════════════════════════╝</pre>\n"
         "🔎 <b>QUERY</b>\n"
-        f"{html.escape(query)}\n\n"
+        f"<code>{html.escape(detect_query_type(query))}</code>  {html.escape(query)}\n\n"
     )
 
     chunks = []
     current = header
     record_no = 0
-    for source_name, records in sources:
-        source_block = f"📁 <b>SOURCE</b>\n{html.escape(source_name)}\n\n"
+
+    for source_index, (source_name, records) in enumerate(sources, 1):
+        source_block = (
+            f"📁 <b>SOURCE #{source_index}</b>\n"
+            f"<code>{html.escape(source_name)}</code>\n\n"
+        )
         if len(current) + len(source_block) > 3800 and current != header:
             chunks.append(current.rstrip())
             current = ""
@@ -127,19 +131,33 @@ def format_simple_result(query, result):
 
         for record in records:
             record_no += 1
-            lines = [f"📄 <b>RECORD #{record_no}</b>", "────────────────────────────────"]
+            lines = [
+                f"📄 <b>RECORD #{record_no}</b>",
+                "<code>────────────────────────────────</code>",
+            ]
+
             if isinstance(record, dict):
+                fields = []
                 for key, value in record.items():
                     if value in (None, "", [], {}):
                         continue
                     if isinstance(value, (dict, list)):
                         value = _compact_value(value)
-                    key_text = _pretty_key(key)
-                    lines.append(
-                        f"{html.escape(key_text):<18}: {html.escape(str(value))}"
-                    )
+                    fields.append((str(key), str(value)))
+
+                if not fields:
+                    lines.append("<i>Tidak ada field.</i>")
+                else:
+                    width = min(max([len(_pretty_key(k)) for k, _ in fields] + [0]), 22)
+                    for key, value in fields:
+                        label = _pretty_key(key)[:width]
+                        lines.append(
+                            f"<code>{html.escape(label.ljust(width))} : "
+                            f"{html.escape(value)}</code>"
+                        )
             else:
-                lines.append(f"Value             : {html.escape(str(record))}")
+                lines.append(f"<code>Value : {html.escape(str(record))}</code>")
+
             block = "\n".join(lines) + "\n\n"
             if len(current) + len(block) > 3800 and current:
                 chunks.append(current.rstrip())
@@ -148,16 +166,18 @@ def format_simple_result(query, result):
 
     summary = (
         "📊 <b>SUMMARY</b>\n"
-        "────────────────────────────────\n"
-        f"Sources : {len(sources)}\n"
-        f"Records : {total_records}"
+        "<code>────────────────────────────────</code>\n"
+        f"<code>Sources : {len(sources)}\n"
+        f"Records : {total_records}</code>"
     )
+
     if len(current) + len(summary) > 3900 and current:
         chunks.append(current.rstrip())
         current = ""
     current += summary
     if current.strip():
         chunks.append(current.rstrip())
+
     return chunks
 
 

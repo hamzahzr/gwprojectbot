@@ -81,8 +81,48 @@ def query_api(query):
     return response.json()
 
 
+def _pretty_key(key):
+    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", str(key))
+    text = text.replace("_", " ").replace("-", " ")
+    return " ".join(text.split()).title()
+
+
+def _compact_value(value):
+    if isinstance(value, dict):
+        return " | ".join(
+            f"{_pretty_key(key)}: {item}"
+            for key, item in value.items()
+            if item not in (None, "", [], {})
+        )
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value)
+    return value
+
+
+def _plain_value(value):
+    if isinstance(value, (dict, list)):
+        value = _compact_value(value)
+    return str(value).replace("\r", " ").replace("\n", " ").strip()
+
+
+def _format_record(record, number):
+    lines = [f"📄 RECORD #{number}", "────────────────────────────────"]
+    if isinstance(record, dict):
+        fields = []
+        for key, value in record.items():
+            if value in (None, "", [], {}):
+                continue
+            fields.append((_pretty_key(key), _plain_value(value)))
+        width = min(max((len(key) for key, _ in fields), default=10), 22)
+        for key, value in fields:
+            lines.append(f"{key:<{width}} : {value}")
+    else:
+        lines.append(f"Value{' ':<15}: {_plain_value(record)}")
+    return "\n".join(lines)
+
+
 def format_simple_result(query, result):
-    """Render results in a clean, structured Telegram layout."""
+    """Render results in a clean, readable Telegram layout."""
     if not isinstance(result, dict):
         return ["❌ Data tidak dapat ditampilkan."]
 
@@ -91,7 +131,7 @@ def format_simple_result(query, result):
 
     listing = result.get("List")
     if not isinstance(listing, dict):
-        return ["🔎 <b>GWPROJECT RESULT</b>\n\nTidak ada data ditemukan."]
+        return ["<b>GWPROJECT RESULT</b>\n\nTidak ada data ditemukan."]
 
     sources = []
     total_records = 0
@@ -105,14 +145,14 @@ def format_simple_result(query, result):
             total_records += len(records)
 
     if not sources:
-        return ["🔎 <b>GWPROJECT RESULT</b>\n\nTidak ada data ditemukan."]
+        return ["<b>GWPROJECT RESULT</b>\n\nTidak ada data ditemukan."]
 
     header = (
-        "<pre>╔══════════════════════════════════╗\n"
-        "║          GWPROJECT RESULT        ║\n"
-        "╚══════════════════════════════════╝</pre>\n"
+        "<b>╔══════════════════════════════════╗</b>\n"
+        "<b>║          GWPROJECT RESULT        ║</b>\n"
+        "<b>╚══════════════════════════════════╝</b>\n\n"
         "🔎 <b>QUERY</b>\n"
-        f"<code>{html.escape(detect_query_type(query))}</code>  {html.escape(query)}\n\n"
+        f"<code>{html.escape(detect_query_type(query))}  {html.escape(query)}</code>\n\n"
     )
 
     chunks = []
@@ -131,72 +171,26 @@ def format_simple_result(query, result):
 
         for record in records:
             record_no += 1
-            lines = [
-                f"📄 <b>RECORD #{record_no}</b>",
-                "<code>────────────────────────────────</code>",
-            ]
-
-            if isinstance(record, dict):
-                fields = []
-                for key, value in record.items():
-                    if value in (None, "", [], {}):
-                        continue
-                    if isinstance(value, (dict, list)):
-                        value = _compact_value(value)
-                    fields.append((str(key), str(value)))
-
-                if not fields:
-                    lines.append("<i>Tidak ada field.</i>")
-                else:
-                    width = min(max([len(_pretty_key(k)) for k, _ in fields] + [0]), 22)
-                    for key, value in fields:
-                        label = _pretty_key(key)[:width]
-                        lines.append(
-                            f"<code>{html.escape(label.ljust(width))} : "
-                            f"{html.escape(value)}</code>"
-                        )
-            else:
-                lines.append(f"<code>Value : {html.escape(str(record))}</code>")
-
-            block = "\n".join(lines) + "\n\n"
-            if len(current) + len(block) > 3800 and current:
+            record_block = _format_record(record, record_no)
+            # Put each record in a monospace block so columns remain aligned.
+            record_block = f"<pre>{html.escape(record_block)}</pre>\n\n"
+            if len(current) + len(record_block) > 3800 and current:
                 chunks.append(current.rstrip())
                 current = ""
-            current += block
+            current += record_block
 
     summary = (
         "📊 <b>SUMMARY</b>\n"
-        "<code>────────────────────────────────</code>\n"
-        f"<code>Sources : {len(sources)}\n"
-        f"Records : {total_records}</code>"
+        "────────────────────────────────\n"
+        f"Sources : {len(sources)}\n"
+        f"Records : {total_records}"
     )
-
     if len(current) + len(summary) > 3900 and current:
         chunks.append(current.rstrip())
         current = ""
     current += summary
-    if current.strip():
-        chunks.append(current.rstrip())
-
+    chunks.append(current.rstrip())
     return chunks
-
-
-def _pretty_key(key):
-    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", str(key))
-    text = text.replace("_", " ").replace("-", " ")
-    return " ".join(text.split()).title()
-
-
-def _compact_value(value):
-    if isinstance(value, dict):
-        parts = []
-        for key, item in value.items():
-            if item not in (None, "", [], {}):
-                parts.append(f"{_pretty_key(key)}: {item}")
-        return " | ".join(parts)
-    if isinstance(value, list):
-        return ", ".join(str(item) for item in value)
-    return value
 
 
 @app.get("/")

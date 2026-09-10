@@ -81,25 +81,8 @@ def query_api(query):
     return response.json()
 
 
-def split_message(text, max_length=3900):
-    if len(text) <= max_length:
-        return [text]
-    chunks, current, size = [], [], 0
-    for line in text.split("\n"):
-        extra = len(line) + (1 if current else 0)
-        if current and size + extra > max_length:
-            chunks.append("\n".join(current))
-            current, size = [line], len(line)
-        else:
-            current.append(line)
-            size += extra
-    if current:
-        chunks.append("\n".join(current))
-    return chunks
-
-
 def format_simple_result(query, result):
-    """Simple human-readable output. No API/internal metadata is shown."""
+    """Format results into a clean Telegram layout while masking sensitive values."""
     if not isinstance(result, dict):
         return ["❌ Data tidak dapat ditampilkan."]
 
@@ -108,48 +91,78 @@ def format_simple_result(query, result):
 
     listing = result.get("List")
     if not isinstance(listing, dict):
-        return ["🔎 <b>HASIL PENCARIAN</b>\n\nTidak ada data ditemukan."]
+        return ["🔎 <b>GWPROJECT RESULT</b>\n\nTidak ada data ditemukan."]
 
-    blocks = []
+    sources = []
+    total_records = 0
     for source_name, source_data in listing.items():
         if str(source_name).lower() == "no results found":
             continue
-
         records = source_data if isinstance(source_data, list) else [source_data]
+        records = [r for r in records if r not in (None, "", [], {})]
+        if records:
+            sources.append((str(source_name), records))
+            total_records += len(records)
+
+    if not sources:
+        return ["🔎 <b>GWPROJECT RESULT</b>\n\nTidak ada data ditemukan."]
+
+    header = (
+        "╔════════════════════════════════╗\n"
+        "║       <b>GWPROJECT RESULT</b>         ║\n"
+        "╚════════════════════════════════╝\n\n"
+        "🔎 <b>QUERY</b>\n"
+        f"<code>{html.escape(query)}</code>\n\n"
+    )
+
+    parts = [header]
+    record_number = 0
+    for source_name, records in sources:
+        parts.append(
+            "📁 <b>SOURCE</b>\n"
+            f"{html.escape(source_name)}\n"
+        )
         for record in records:
+            record_number += 1
+            parts.append(f"📄 <b>RECORD #{record_number}</b>\n────────────────────────────────")
             if isinstance(record, dict):
-                fields = []
                 for key, value in record.items():
                     if value in (None, "", [], {}):
                         continue
-                    if isinstance(value, (dict, list)):
-                        value = _compact_value(value)
-                    fields.append(
-                        f"• <b>{html.escape(_pretty_key(key))}:</b> "
-                        f"<code>{html.escape(str(value))}</code>"
+                    value = _compact_value(value)
+                    value = _mask_sensitive(key, value)
+                    parts.append(
+                        f"{html.escape(_pretty_key(key)):18}: <code>{html.escape(str(value))}</code>"
                     )
-                if fields:
-                    blocks.append("\n".join(fields))
-            elif record not in (None, ""):
-                blocks.append(f"• <code>{html.escape(str(record))}</code>")
+            else:
+                parts.append(f"Data               : <code>{html.escape(str(record))}</code>")
+            parts.append("")
 
-    if not blocks:
-        return ["🔎 <b>HASIL PENCARIAN</b>\n\nTidak ada data ditemukan."]
-
-    header = (
-        "🔎 <b>HASIL PENCARIAN</b>\n"
-        f"{html.escape(detect_query_type(query))}: <code>{html.escape(query)}</code>\n\n"
+    parts.append(
+        "📊 <b>SUMMARY</b>\n"
+        "────────────────────────────────\n"
+        f"Sources : {len(sources)}\n"
+        f"Records : {total_records}"
     )
+
+    text = "\n".join(parts).strip()
+    return split_message(text)
+
+
+def split_message(text, max_length=3900):
+    if len(text) <= max_length:
+        return [text]
     chunks = []
-    current = header
-    for block in blocks:
-        addition = block + "\n\n"
-        if len(current) + len(addition) > 3800 and current != header:
-            chunks.append(current.rstrip())
-            current = ""
-        current += addition
-    if current.strip():
-        chunks.append(current.rstrip())
+    current = ""
+    for block in text.split("\n\n"):
+        candidate = block if not current else current + "\n\n" + block
+        if current and len(candidate) > max_length:
+            chunks.append(current)
+            current = block
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
     return chunks
 
 
@@ -168,6 +181,22 @@ def _compact_value(value):
         return " | ".join(parts)
     if isinstance(value, list):
         return ", ".join(str(item) for item in value)
+    return value
+
+
+def _mask_sensitive(key, value):
+    """Prevent raw personal identifiers, credentials, and secrets from being echoed."""
+    key_text = str(key).lower().replace("_", " ").replace("-", " ")
+    sensitive = (
+        "nik", "phone", "mobile", "telephone", "email", "e mail", "address",
+        "nama", "name", "username", "password", "passwd", "token", "secret",
+        "api key", "apikey", "cookie", "session", "credit", "card", "ssn"
+    )
+    if any(term in key_text for term in sensitive):
+        text = str(value)
+        if len(text) <= 4:
+            return "••••"
+        return text[:2] + "••••" + text[-2:]
     return value
 
 

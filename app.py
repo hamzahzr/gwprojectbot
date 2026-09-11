@@ -8,6 +8,7 @@ from threading import Lock
 import requests
 from flask import Flask, jsonify, request
 
+from tiktok_api import format_tiktok_result, query_tiktok
 from username_api import query_username_api
 
 app = Flask(__name__)
@@ -24,7 +25,7 @@ _pending_input = {}
 _rate_lock = Lock()
 _db_lock = Lock()
 
-PERMISSIONS = ("search", "ai", "username", "rekening", "ewallet", "tools")
+PERMISSIONS = ("search", "ai", "username", "rekening", "ewallet", "tiktok", "tools")
 
 
 def db():
@@ -148,6 +149,7 @@ def tools_menu(user_id):
     return {"inline_keyboard": [
         [button("🔎 SEARCH", "search")],
         [button("👤 CEK USERNAME", "username")],
+        [button("🎵 TIKTOK SCRAPER", "tiktok")],
         [button("🏦 CEK REKENING", "rekening")],
         [button("💳 CEK eWallet", "ewallet")],
         [button("🧠 AI ANALYSIS", "ai")],
@@ -224,7 +226,7 @@ def format_username_result(username, result):
     found = list(dict.fromkeys(found))
     if not found:
         return f"👤 <b>CEK USERNAME</b>\n\nUsername: <code>{html.escape(username)}</code>\n\nTidak ditemukan profil publik yang cocok."
-    lines = [f"👤 <b>CEK USERNAME</b>", f"\nUsername: <code>{html.escape(username)}</code>", "", f"Ditemukan: <b>{len(found)}</b> profil publik", ""]
+    lines = ["👤 <b>CEK USERNAME</b>", f"\nUsername: <code>{html.escape(username)}</code>", "", f"Ditemukan: <b>{len(found)}</b> profil publik", ""]
     lines.extend(f"• {html.escape(url)}" for url in found[:50])
     return "\n".join(lines)
 
@@ -275,7 +277,7 @@ def callback_handler(cb):
         elif data == "tools":
             clear_pending(uid)
             edit_message(chat_id, message_id, "<b>🧰 ALL TOOLS</b>\n\nPilih layanan yang tersedia.", tools_menu(uid))
-        elif data in {"search", "username", "rekening", "ewallet", "ai"}:
+        elif data in {"search", "username", "tiktok", "rekening", "ewallet", "ai"}:
             clear_pending(uid)
             permission = data
             if not has_permission(uid, permission):
@@ -285,6 +287,7 @@ def callback_handler(cb):
             prompts = {
                 "search": "🔎 <b>SEARCH</b>\n\nSilakan masukkan input untuk SEARCH.",
                 "username": "👤 <b>CEK USERNAME</b>\n\nSilakan masukkan username.\nContoh: <code>@username</code>",
+                "tiktok": "🎵 <b>TIKTOK SCRAPER</b>\n\nKirim username TikTok atau URL profil/video TikTok.\nContoh: <code>@tiktok</code> atau <code>https://www.tiktok.com/@tiktok</code>",
                 "rekening": "🏦 <b>CEK REKENING</b>\n\nSilakan masukkan nomor rekening.",
                 "ewallet": "💳 <b>CEK eWallet</b>\n\nSilakan masukkan nomor eWallet.",
                 "ai": "🧠 <b>AI ANALYSIS</b>\n\nSilakan kirim teks atau pertanyaan.",
@@ -300,7 +303,7 @@ def callback_handler(cb):
             if is_admin(uid):
                 edit_message(chat_id, message_id, users_text(), {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
         elif data == "grant_help":
-            edit_message(chat_id, message_id, "➕ <b>GRANT</b>\n\n<code>/grant USER_ID permission</code>\nPermission: search, username, rekening, ewallet, ai, tools", {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
+            edit_message(chat_id, message_id, "➕ <b>GRANT</b>\n\n<code>/grant USER_ID permission</code>\nPermission: search, username, tiktok, rekening, ewallet, ai, tools", {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
         elif data == "revoke_help":
             edit_message(chat_id, message_id, "🚫 <b>REVOKE</b>\n\n<code>/revoke USER_ID permission</code>", {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
         elif data == "role_help":
@@ -402,6 +405,10 @@ def webhook():
                 else:
                     result = query_username_api(value)
                     send_message(chat_id, format_username_result(value, result))
+            elif pending == "tiktok":
+                value = text.strip()
+                result = query_tiktok(value)
+                send_message(chat_id, format_tiktok_result(value, result))
             else:
                 name = {"search": "SEARCH", "rekening": "REKENING", "ewallet": "EWALLET", "ai": "AI"}[pending]
                 result = call_configured_api(name, text)

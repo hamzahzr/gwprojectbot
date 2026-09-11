@@ -118,6 +118,48 @@ def send_message(chat_id, text, markup=None):
     return telegram("sendMessage", payload)
 
 
+def send_long_message(chat_id, text, limit=3900):
+    """Send long Telegram HTML text in safe chunks without cutting HTML tags."""
+    if len(text) <= limit:
+        return [send_message(chat_id, text)]
+
+    chunks = []
+    current = ""
+    for block in text.split("\n────────────────\n"):
+        block = block.strip()
+        if not block:
+            continue
+        candidate = block if not current else current + "\n\n────────────────\n\n" + block
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        # A single block can still be too large; split by lines first.
+        if len(block) <= limit:
+            current = block
+        else:
+            line_current = ""
+            for line in block.splitlines():
+                candidate_line = line if not line_current else line_current + "\n" + line
+                if len(candidate_line) <= limit:
+                    line_current = candidate_line
+                else:
+                    if line_current:
+                        chunks.append(line_current)
+                    line_current = line[:limit]
+            current = line_current
+    if current:
+        chunks.append(current)
+
+    results = []
+    for index, chunk in enumerate(chunks, 1):
+        if index > 1:
+            chunk = f"🎵 <b>TIKTOK SCRAPER · {index}/{len(chunks)}</b>\n\n" + chunk
+        results.append(send_message(chat_id, chunk))
+    return results
+
+
 def edit_message(chat_id, message_id, text, markup=None):
     payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     if markup is not None:
@@ -408,7 +450,7 @@ def webhook():
             elif pending == "tiktok":
                 value = text.strip()
                 result = query_tiktok(value)
-                send_message(chat_id, format_tiktok_result(value, result))
+                send_long_message(chat_id, format_tiktok_result(value, result))
             else:
                 name = {"search": "SEARCH", "rekening": "REKENING", "ewallet": "EWALLET", "ai": "AI"}[pending]
                 result = call_configured_api(name, text)
@@ -428,6 +470,3 @@ def webhook():
 
 
 init_db()
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")))

@@ -22,6 +22,7 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "gwproject.db")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 _last_request = {}
+_pending_input = {}
 _rate_lock = Lock()
 _db_lock = Lock()
 
@@ -132,12 +133,10 @@ def button(text, data):
 def main_menu(user_id):
     rows = [
         [button("🧰 ALL TOOLS", "tools"), button("🧠 AI ANALYSIS", "ai")],
-        [button("📚 RIWAYAT", "history")],
+        [button("ℹ️ STATUS", "status")],
     ]
     if is_admin(user_id):
-        rows.append([button("⚙️ PENGATURAN", "settings"), button("ℹ️ STATUS", "status")])
-    else:
-        rows.append([button("ℹ️ STATUS", "status")])
+        rows.append([button("⚙️ PENGATURAN", "settings")])
     return {"inline_keyboard": rows}
 
 
@@ -145,8 +144,11 @@ def tools_menu(user_id):
     if not has_permission(user_id, "tools"):
         return {"inline_keyboard": [[button("🔒 AKSES DITOLAK", "denied")], [button("🔙 KEMBALI", "home")]]}
     return {"inline_keyboard": [
-        [button("🔎 PENCARIAN", "search")],
-        [button("📊 ANALISIS DATA", "ai")],
+        [button("🔎 SEARCH", "search")],
+        [button("👤 CEK USERNAME", "username")],
+        [button("🏦 CEK REKENING", "rekening")],
+        [button("💳 CEK EWALLET", "ewallet")],
+        [button("🧠 AI ANALYSIS", "ai")],
         [button("🔙 KEMBALI", "home")],
     ]}
 
@@ -266,6 +268,14 @@ def users_text():
     return "\n".join(lines)
 
 
+def set_pending(user_id, action):
+    _pending_input[str(user_id)] = action
+
+
+def clear_pending(user_id):
+    _pending_input.pop(str(user_id), None)
+
+
 def callback_handler(cb):
     callback_id = cb.get("id", "")
     data = cb.get("data", "")
@@ -278,19 +288,43 @@ def callback_handler(cb):
     try:
         answer_callback(callback_id)
         if data == "home":
+            clear_pending(uid)
             edit_message(chat_id, message_id, "<b>🛰️ GW-PROJECT</b>\n\nPrivate operations console\n\nPilih layanan dari menu di bawah.", main_menu(uid))
         elif data == "tools":
+            clear_pending(uid)
             edit_message(chat_id, message_id, "<b>🧰 ALL TOOLS</b>\n\nPilih layanan yang tersedia.", tools_menu(uid))
         elif data == "ai":
-            if not has_permission(uid, "ai"): edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses AI Analysis.", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
-            else: edit_message(chat_id, message_id, "🧠 <b>AI ANALYSIS</b>\n\nFitur AI siap digunakan pada modul berikutnya.", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
+            clear_pending(uid)
+            if not has_permission(uid, "ai"): edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses AI Analysis.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
+            else:
+                set_pending(uid, "ai")
+                edit_message(chat_id, message_id, "🧠 <b>AI ANALYSIS</b>\n\nSilakan kirim pertanyaan atau teks yang ingin dianalisis.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
         elif data == "search":
+            clear_pending(uid)
             if not has_permission(uid, "search"): edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses Pencarian.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
-            else: edit_message(chat_id, message_id, "🔎 <b>PENCARIAN</b>\n\nKirim perintah <code>/cek kata_pencarian</code> untuk memulai.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
+            else:
+                set_pending(uid, "search")
+                edit_message(chat_id, message_id, "🔎 <b>SEARCH</b>\n\nSilakan masukkan data yang ingin dicari.\nTidak perlu menggunakan command.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
+        elif data == "username":
+            clear_pending(uid)
+            if not has_permission(uid, "search"): edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses Cek Username.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
+            else:
+                set_pending(uid, "username")
+                edit_message(chat_id, message_id, "👤 <b>CEK USERNAME</b>\n\nSilakan masukkan username yang ingin diperiksa.\nContoh: <code>@username</code>", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
+        elif data == "rekening":
+            clear_pending(uid)
+            set_pending(uid, "rekening")
+            edit_message(chat_id, message_id, "🏦 <b>CEK REKENING</b>\n\nSilakan masukkan nomor rekening.\nAPI akan disambungkan setelah endpoint diberikan.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
+        elif data == "ewallet":
+            clear_pending(uid)
+            set_pending(uid, "ewallet")
+            edit_message(chat_id, message_id, "💳 <b>CEK EWALLET</b>\n\nSilakan masukkan nomor e-wallet.\nAPI akan disambungkan setelah endpoint diberikan.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
         elif data == "history":
+            clear_pending(uid)
             if not has_permission(uid, "history"): edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses Riwayat.", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
             else: edit_message(chat_id, message_id, "📚 <b>RIWAYAT</b>\n\nAktivitas Anda tercatat untuk audit. Detail pencarian sensitif tidak ditampilkan di menu riwayat.", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
         elif data == "settings":
+            clear_pending(uid)
             if not is_admin(uid): edit_message(chat_id, message_id, "🔒 Akses admin diperlukan.", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
             else: edit_message(chat_id, message_id, "⚙️ <b>PENGATURAN AKSES</b>\n\nKelola pengguna dan izin dari menu ini.\n\nContoh:\n<code>/grant 123456789 search</code>\n<code>/revoke 123456789 search</code>\n<code>/role 123456789 operator</code>", settings_menu())
         elif data == "users":
@@ -303,6 +337,7 @@ def callback_handler(cb):
         elif data == "role_help":
             edit_message(chat_id, message_id, "👑 <b>ROLE</b>\n\n<code>/role USER_ID admin</code>\n<code>/role USER_ID operator</code>\n<code>/role USER_ID user</code>", {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
         elif data == "status":
+            clear_pending(uid)
             edit_message(chat_id, message_id, status_text(uid), {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
         elif data == "denied":
             answer_callback(callback_id, "Akses belum diberikan")
@@ -338,10 +373,12 @@ def webhook():
         return jsonify({"ok": True})
 
     if text.startswith("/start"):
+        clear_pending(user_id)
         send_message(chat_id, "<b>🛰️ GW-PROJECT</b>\n\nPrivate operations console\n\nPilih layanan dari menu di bawah.\nSetiap request dicatat untuk audit dan akses dikontrol berdasarkan role/izin.", main_menu(user_id))
         return jsonify({"ok": True})
 
     if text.startswith("/grant ") or text.startswith("/revoke "):
+        clear_pending(user_id)
         if not is_admin(user_id):
             send_message(chat_id, "🔒 Akses admin diperlukan."); return jsonify({"ok": True})
         parts = text.split()
@@ -353,6 +390,7 @@ def webhook():
         return jsonify({"ok": True})
 
     if text.startswith("/role "):
+        clear_pending(user_id)
         if not is_admin(user_id): send_message(chat_id, "🔒 Akses admin diperlukan."); return jsonify({"ok": True})
         parts = text.split()
         if len(parts) != 3 or parts[2] not in ("admin", "operator", "user"):
@@ -363,8 +401,35 @@ def webhook():
         return jsonify({"ok": True})
 
     if text.startswith("/users"):
+        clear_pending(user_id)
         if is_admin(user_id): send_message(chat_id, users_text())
         else: send_message(chat_id, "🔒 Akses admin diperlukan.")
+        return jsonify({"ok": True})
+
+    pending = _pending_input.get(str(user_id))
+    if pending in ("search", "username"):
+        if not has_permission(user_id, "search"):
+            clear_pending(user_id)
+            send_message(chat_id, "🔒 <b>Akses Pencarian belum diberikan.</b>\nHubungi admin untuk mendapatkan izin.")
+            return jsonify({"ok": True})
+        query = text
+        if pending == "username" and query.startswith("@"):
+            query = query[1:]
+        if not allowed_query(query):
+            send_message(chat_id, "❌ Format input tidak valid. Silakan kirim data yang benar.")
+            return jsonify({"ok": True})
+        if not rate_allowed(user_id):
+            send_message(chat_id, "⏱️ Tunggu beberapa detik sebelum pencarian berikutnya.")
+            return jsonify({"ok": True})
+        clear_pending(user_id)
+        audit(user_id, "username_search" if pending == "username" else "search")
+        send_message(chat_id, "🔎 <b>Mencari...</b>")
+        try:
+            result = query_api(query)
+            for chunk in format_simple_result(query, result): send_message(chat_id, chunk)
+        except requests.RequestException: send_message(chat_id, "❌ Server tidak dapat dihubungi.")
+        except (ValueError, TypeError): send_message(chat_id, "❌ Respons server tidak valid.")
+        except Exception: send_message(chat_id, "❌ Terjadi kesalahan. Silakan coba lagi.")
         return jsonify({"ok": True})
 
     if text.startswith("/cek"):

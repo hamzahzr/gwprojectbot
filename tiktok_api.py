@@ -7,7 +7,7 @@ import requests
 TIKTOK_API_TOKEN = os.getenv("TIKTOK_API_TOKEN", "").strip()
 TIKTOK_API_URL = os.getenv(
     "TIKTOK_API_URL",
-    "https://api.apify.com/v2/actors/headlessagent~tiktok-profile-video-scraper/run-sync-get-dataset-items",
+    "https://api.apify.com/v2/acts/xx_topiskaiplus_xx~TikTok-Scraper/run-sync-get-dataset-items",
 ).strip()
 
 _VIDEO_URL_RE = re.compile(r"https?://(?:www\.)?tiktok\.com/@([^/\s]+)/video/(\d+)/?", re.I)
@@ -41,15 +41,16 @@ def query_tiktok(value):
     video_match = _video_match(value)
     profile_match = _profile_match(value)
     if video_match:
-        payload = {"usernames": [], "videoUrls": [value]}
+        # This Actor is configured around its required username input.
+        username = video_match.group(1)
     elif profile_match:
-        payload = {"usernames": [profile_match.group(1)], "videoUrls": []}
+        username = profile_match.group(1)
     else:
-        payload = {"usernames": [_clean_username(value)], "videoUrls": []}
+        username = _clean_username(value)
 
     response = requests.post(
         TIKTOK_API_URL,
-        json=payload,
+        json={"username": username},
         headers={
             "Authorization": f"Bearer {TIKTOK_API_TOKEN}",
             "Content-Type": "application/json",
@@ -186,7 +187,7 @@ def format_tiktok_result(value, result):
         _section(lines, "BASIC IDENTITY")
         _add(lines, "Username:", pick("username", "unique_id", "uniqueId"))
         _add(lines, "Nickname:", pick("nickname", "display_name"))
-        _add(lines, "Account ID:", pick("uid", "user_id", "userId", "account_id", "id") if not _first(item, "id", "video_id", "videoId", "aweme_id") else pick("uid", "user_id", "userId", "account_id"))
+        _add(lines, "Account ID:", pick("uid", "user_id", "userId", "account_id"))
         _add(lines, "Secret UID:", pick("secUid", "sec_uid"))
         _add(lines, "Region/Country:", pick("region", "region_code", "country", "country_code"))
         _add(lines, "Language:", pick("language", "lang"))
@@ -224,11 +225,11 @@ def format_tiktok_result(value, result):
         lines.append("")
 
         _section(lines, "ADVANCED DISCOVERY")
-        _add(lines, "Suggest Account:", _bool_label(pick("suggest_account", "suggest_account_for_others", "can_be_suggested"), yes="Yes ❌", no="No ❌"))
-        _add(lines, "Show Music Tab:", _bool_label(pick("show_music_tab", "music_tab_visible", "has_music_tab"), yes="Yes ❌", no="No ❌"))
-        _add(lines, "Show Playlist:", _bool_label(pick("show_playlist", "playlist_visible", "has_playlist"), yes="Yes ❌", no="No ❌"))
-        _add(lines, "Commerce User:", _bool_label(pick("commerce_user", "is_commerce", "commerce_user_info"), yes="Yes 👤", no="No 👤"))
-        _add(lines, "Profile Locked:", _bool_label(pick("profile_locked", "is_profile_locked", "profile_lock"), yes="Yes 🔒", no="No ❌"))
+        _add(lines, "Suggest Account:", _bool_label(pick("suggest_account", "suggest_account_for_others", "can_be_suggested"), yes="Yes", no="No"))
+        _add(lines, "Show Music Tab:", _bool_label(pick("show_music_tab", "music_tab_visible", "has_music_tab"), yes="Yes", no="No"))
+        _add(lines, "Show Playlist:", _bool_label(pick("show_playlist", "playlist_visible", "has_playlist"), yes="Yes", no="No"))
+        _add(lines, "Commerce User:", _bool_label(pick("commerce_user", "is_commerce", "commerce_user_info"), yes="Yes", no="No"))
+        _add(lines, "Profile Locked:", _bool_label(pick("profile_locked", "is_profile_locked", "profile_lock"), yes="Yes 🔒", no="No"))
         lines.append("")
 
         _section(lines, "VIDEO / CONTENT")

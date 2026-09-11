@@ -41,8 +41,7 @@ def init_db():
         conn.execute("CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, action TEXT, created_at INTEGER)")
         for uid in ADMIN_IDS:
             conn.execute(
-                "INSERT INTO users(user_id, role, permissions) VALUES(?,?,?) "
-                "ON CONFLICT(user_id) DO UPDATE SET role='admin', permissions=?",
+                "INSERT INTO users(user_id, role, permissions) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET role='admin', permissions=?",
                 (uid, "admin", ",".join(PERMISSIONS), ",".join(PERMISSIONS)),
             )
         conn.commit()
@@ -119,45 +118,24 @@ def send_message(chat_id, text, markup=None):
 
 
 def send_long_message(chat_id, text, limit=3900):
-    """Send long Telegram HTML text in safe chunks without cutting HTML tags."""
     if len(text) <= limit:
         return [send_message(chat_id, text)]
-
     chunks = []
     current = ""
-    for block in text.split("\n────────────────\n"):
-        block = block.strip()
-        if not block:
-            continue
-        candidate = block if not current else current + "\n\n────────────────\n\n" + block
+    for line in text.splitlines():
+        candidate = line if not current else current + "\n" + line
         if len(candidate) <= limit:
             current = candidate
-            continue
-        if current:
-            chunks.append(current)
-        # A single block can still be too large; split by lines first.
-        if len(block) <= limit:
-            current = block
         else:
-            line_current = ""
-            for line in block.splitlines():
-                candidate_line = line if not line_current else line_current + "\n" + line
-                if len(candidate_line) <= limit:
-                    line_current = candidate_line
-                else:
-                    if line_current:
-                        chunks.append(line_current)
-                    line_current = line[:limit]
-            current = line_current
+            if current:
+                chunks.append(current)
+            while len(line) > limit:
+                chunks.append(line[:limit])
+                line = line[limit:]
+            current = line
     if current:
         chunks.append(current)
-
-    results = []
-    for index, chunk in enumerate(chunks, 1):
-        if index > 1:
-            chunk = f"🎵 <b>TIKTOK SCRAPER · {index}/{len(chunks)}</b>\n\n" + chunk
-        results.append(send_message(chat_id, chunk))
-    return results
+    return [send_message(chat_id, chunk) for chunk in chunks]
 
 
 def edit_message(chat_id, message_id, text, markup=None):
@@ -291,6 +269,54 @@ def call_configured_api(name, value):
     return response.json()
 
 
+def call_search_api(value):
+    url = os.getenv("SEARCH_API_URL", "https://leakosintapi.com/").strip()
+    token = os.getenv("SEARCH_API_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("SEARCH_API_TOKEN belum dikonfigurasi")
+    try:
+        limit = int(os.getenv("SEARCH_API_LIMIT", "100"))
+    except ValueError:
+        limit = 100
+    limit = max(100, min(limit, 10000))
+    payload = {
+        "token": token,
+        "request": value,
+        "limit": limit,
+        "lang": os.getenv("SEARCH_API_LANG", "en").strip() or "en",
+        "type": "json",
+    }
+    response = requests.post(url, json=payload, timeout=60)
+    response.raise_for_status()
+    return response.json()
+
+
+def search_result_message(result):
+    if not isinstance(result, dict):
+        return "🔎 <b>SEARCH</b>\n\nAPI merespons dengan format yang tidak dikenali."
+    status = result.get("status")
+    message = result.get("message")
+    databases = result.get("List")
+    if isinstance(databases, dict):
+        names = list(databases.keys())
+        count = len(names)
+        lines = ["🔎 <b>SEARCH</b>", "", f"Database ditemukan: <b>{count}</b>"]
+        if status is not None:
+            lines.append(f"Status: <b>{html.escape(str(status))}</b>")
+        if message:
+            lines.append(f"Pesan: {html.escape(str(message))}")
+        if names:
+            lines += ["", "<b>Database:</b>"]
+            lines.extend(f"• {html.escape(str(name))}" for name in names[:100])
+        lines += ["", "ℹ️ Hasil record mentah tidak ditampilkan."]
+        return "\n".join(lines)
+    safe = []
+    for key in ("status", "message", "count", "total", "success"):
+        if key in result and isinstance(result[key], (str, int, float, bool)):
+            safe.append(f"{html.escape(key.title())}: <b>{html.escape(str(result[key]))}</b>")
+    return "🔎 <b>SEARCH</b>\n\n" + ("\n".join(safe) if safe else "API merespons, tetapi tidak ada metadata hasil yang dikenali.")
+
+
 def safe_api_message(name, result):
     if not isinstance(result, dict):
         return f"✅ <b>{html.escape(name)}</b>\n\nAPI merespons, tetapi format hasil tidak dikenali."
@@ -321,8 +347,7 @@ def callback_handler(cb):
             edit_message(chat_id, message_id, "<b>🧰 ALL TOOLS</b>\n\nPilih layanan yang tersedia.", tools_menu(uid))
         elif data in {"search", "username", "tiktok", "rekening", "ewallet", "ai"}:
             clear_pending(uid)
-            permission = data
-            if not has_permission(uid, permission):
+            if not has_permission(uid, data):
                 edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses untuk tool ini.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
                 return
             set_pending(uid, data)
@@ -440,7 +465,10 @@ def webhook():
         audit(user_id, f"{pending}_request")
         send_message(chat_id, "⏳ <b>Memproses...</b>")
         try:
-            if pending == "username":
+            if pending == "search":
+                result = call_search_api(text)
+                send_long_message(chat_id, search_result_message(result))
+            elif pending == "username":
                 value = text.lstrip("@").strip()
                 if not valid_username(value):
                     send_message(chat_id, "❌ Format username tidak valid.")
@@ -452,7 +480,7 @@ def webhook():
                 result = query_tiktok(value)
                 send_long_message(chat_id, format_tiktok_result(value, result))
             else:
-                name = {"search": "SEARCH", "rekening": "REKENING", "ewallet": "EWALLET", "ai": "AI"}[pending]
+                name = {"rekening": "REKENING", "ewallet": "EWALLET", "ai": "AI"}[pending]
                 result = call_configured_api(name, text)
                 send_message(chat_id, safe_api_message(name, result))
         except RuntimeError as exc:

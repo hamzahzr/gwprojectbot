@@ -291,30 +291,57 @@ def call_search_api(value):
     return response.json()
 
 
+SENSITIVE_KEYS = re.compile(
+    r"(?:password|passwd|pwd|token|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|session|credential|private[_-]?key|cvv|cvc|otp|pin|security[_-]?code)",
+    re.I,
+)
+
+
+def _safe_search_value(key, value):
+    key_text = str(key)
+    if SENSITIVE_KEYS.search(key_text):
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {k: _safe_search_value(k, v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_safe_search_value(key_text, item) for item in value]
+    return value
+
+
+def _render_search_value(value, indent=0):
+    prefix = "  " * indent
+    if isinstance(value, dict):
+        lines = []
+        for key, item in value.items():
+            safe_item = _safe_search_value(key, item)
+            if isinstance(safe_item, (dict, list)):
+                lines.append(f"{prefix}<b>{html.escape(str(key))}</b>:")
+                lines.extend(_render_search_value(safe_item, indent + 1))
+            else:
+                lines.append(f"{prefix}<b>{html.escape(str(key))}</b>: {html.escape(str(safe_item))}")
+        return lines
+    if isinstance(value, list):
+        lines = []
+        for index, item in enumerate(value, 1):
+            if isinstance(item, (dict, list)):
+                lines.append(f"{prefix}<b>#{index}</b>")
+                lines.extend(_render_search_value(item, indent + 1))
+            else:
+                lines.append(f"{prefix}• {html.escape(str(item))}")
+        return lines
+    return [f"{prefix}{html.escape(str(value))}"]
+
+
 def search_result_message(result):
     if not isinstance(result, dict):
         return "🔎 <b>SEARCH</b>\n\nAPI merespons dengan format yang tidak dikenali."
-    status = result.get("status")
-    message = result.get("message")
-    databases = result.get("List")
-    if isinstance(databases, dict):
-        names = list(databases.keys())
-        count = len(names)
-        lines = ["🔎 <b>SEARCH</b>", "", f"Database ditemukan: <b>{count}</b>"]
-        if status is not None:
-            lines.append(f"Status: <b>{html.escape(str(status))}</b>")
-        if message:
-            lines.append(f"Pesan: {html.escape(str(message))}")
-        if names:
-            lines += ["", "<b>Database:</b>"]
-            lines.extend(f"• {html.escape(str(name))}" for name in names[:100])
-        lines += ["", "ℹ️ Hasil record mentah tidak ditampilkan."]
-        return "\n".join(lines)
-    safe = []
-    for key in ("status", "message", "count", "total", "success"):
-        if key in result and isinstance(result[key], (str, int, float, bool)):
-            safe.append(f"{html.escape(key.title())}: <b>{html.escape(str(result[key]))}</b>")
-    return "🔎 <b>SEARCH</b>\n\n" + ("\n".join(safe) if safe else "API merespons, tetapi tidak ada metadata hasil yang dikenali.")
+
+    # Render the complete response structure instead of returning only List names.
+    # High-risk credential fields are redacted before rendering.
+    safe_result = _safe_search_value("root", result)
+    lines = ["🔎 <b>SEARCH</b>", ""]
+    lines.extend(_render_search_value(safe_result))
+    return "\n".join(lines)
 
 
 def safe_api_message(name, result):
@@ -354,147 +381,158 @@ def callback_handler(cb):
             prompts = {
                 "search": "🔎 <b>SEARCH</b>\n\nSilakan masukkan input untuk SEARCH.",
                 "username": "👤 <b>CEK USERNAME</b>\n\nSilakan masukkan username.\nContoh: <code>@username</code>",
-                "tiktok": "🎵 <b>TIKTOK SCRAPER</b>\n\nKirim username TikTok atau URL profil/video TikTok.\nContoh: <code>@tiktok</code> atau <code>https://www.tiktok.com/@tiktok</code>",
-                "rekening": "🏦 <b>CEK REKENING</b>\n\nSilakan masukkan nomor rekening.",
-                "ewallet": "💳 <b>CEK eWallet</b>\n\nSilakan masukkan nomor eWallet.",
-                "ai": "🧠 <b>AI ANALYSIS</b>\n\nSilakan kirim teks atau pertanyaan.",
+                "tiktok": "🎵 <b>TIKTOK SCRAPER</b>\n\nKirim URL profil/video TikTok.",
+                "rekening": "🏦 <b>CEK REKENING</b>\n\nMasukkan data yang ingin diperiksa.",
+                "ewallet": "💳 <b>CEK eWallet</b>\n\nMasukkan data yang ingin diperiksa.",
+                "ai": "🧠 <b>AI ANALYSIS</b>\n\nMasukkan teks/data untuk dianalisis.",
             }
             edit_message(chat_id, message_id, prompts[data], {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
-        elif data == "settings":
-            clear_pending(uid)
-            if not is_admin(uid):
-                edit_message(chat_id, message_id, "🔒 Akses admin diperlukan.", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
-            else:
-                edit_message(chat_id, message_id, "⚙️ <b>PENGATURAN AKSES</b>\n\nKelola pengguna dan izin.", settings_menu())
-        elif data == "users":
-            if is_admin(uid):
-                edit_message(chat_id, message_id, users_text(), {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
-        elif data == "grant_help":
-            edit_message(chat_id, message_id, "➕ <b>GRANT</b>\n\n<code>/grant USER_ID permission</code>\nPermission: search, username, tiktok, rekening, ewallet, ai, tools", {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
-        elif data == "revoke_help":
-            edit_message(chat_id, message_id, "🚫 <b>REVOKE</b>\n\n<code>/revoke USER_ID permission</code>", {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
-        elif data == "role_help":
-            edit_message(chat_id, message_id, "👑 <b>ROLE</b>\n\n<code>/role USER_ID admin|operator|user</code>", {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
         elif data == "status":
             clear_pending(uid)
             edit_message(chat_id, message_id, status_text(uid), {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
+        elif data == "settings":
+            clear_pending(uid)
+            if not is_admin(uid):
+                edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
+                return
+            edit_message(chat_id, message_id, "⚙️ <b>PENGATURAN</b>\n\nPilih administrasi yang ingin dikelola.", settings_menu())
+        elif data == "users":
+            clear_pending(uid)
+            if not is_admin(uid):
+                edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
+                return
+            edit_message(chat_id, message_id, users_text(), {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
+        elif data == "grant_help":
+            clear_pending(uid)
+            edit_message(chat_id, message_id, "➕ <b>GRANT AKSES</b>\n\nGunakan command:\n<code>/grant USER_ID PERMISSION</code>\n\nPermission: search, ai, username, rekening, ewallet, tiktok, tools", {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
+        elif data == "revoke_help":
+            clear_pending(uid)
+            edit_message(chat_id, message_id, "🚫 <b>REVOKE AKSES</b>\n\nGunakan command:\n<code>/revoke USER_ID PERMISSION</code>", {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
+        elif data == "role_help":
+            clear_pending(uid)
+            edit_message(chat_id, message_id, "👑 <b>ROLE</b>\n\nGunakan command:\n<code>/role USER_ID admin</code>\natau\n<code>/role USER_ID user</code>", {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
         elif data == "denied":
             answer_callback(callback_id, "Akses belum diberikan")
+        else:
+            clear_pending(uid)
     except requests.RequestException:
         pass
 
 
-@app.get("/")
-def home():
-    return jsonify({"status": "ok", "service": "GWProject Telegram Bot"})
-
-
-@app.post("/webhook")
-def webhook():
-    if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token", "") != WEBHOOK_SECRET:
-        return jsonify({"ok": False}), 403
-    update = request.get_json(silent=True) or {}
-    if update.get("callback_query"):
-        callback_handler(update["callback_query"])
-        return jsonify({"ok": True})
-
-    message = update.get("message") or {}
-    chat = message.get("chat") or {}
+def handle_message(message):
     user = message.get("from") or {}
+    user_id = user.get("id")
+    chat = message.get("chat") or {}
     chat_id = chat.get("id")
-    user_id = user.get("id", chat_id)
     text = (message.get("text") or "").strip()
-    if not chat_id or not text:
-        return jsonify({"ok": True})
+    if user_id is None or chat_id is None:
+        return
     get_user(user_id)
-
-    if text == "/id":
-        send_message(chat_id, f"🆔 Telegram User ID Anda:\n\n<code>{html.escape(str(user_id))}</code>")
-        return jsonify({"ok": True})
-
     if text.startswith("/start"):
         clear_pending(user_id)
-        send_message(chat_id, "<b>🛰️ GW-PROJECT</b>\n\nPrivate operations console\n\nPilih layanan dari menu di bawah.", main_menu(user_id))
-        return jsonify({"ok": True})
-
-    if text.startswith("/grant ") or text.startswith("/revoke "):
-        clear_pending(user_id)
+        send_message(chat_id, "<b>🛰️ GW-PROJECT</b>\n\nSelamat datang. Pilih layanan dari menu di bawah.", main_menu(user_id))
+        return
+    if text == "/id":
+        send_message(chat_id, f"🆔 Telegram ID Anda: <code>{html.escape(str(user_id))}</code>")
+        return
+    if text.startswith("/grant"):
         if not is_admin(user_id):
             send_message(chat_id, "🔒 Akses admin diperlukan.")
-            return jsonify({"ok": True})
+            return
         parts = text.split()
         if len(parts) != 3 or parts[2] not in PERMISSIONS:
-            send_message(chat_id, "Format: <code>/grant USER_ID permission</code>")
-            return jsonify({"ok": True})
-        target, perm = parts[1], parts[2]
+            send_message(chat_id, "Format: <code>/grant USER_ID PERMISSION</code>")
+            return
+        target, permission = parts[1], parts[2]
         get_user(target)
-        set_permission(target, perm, text.startswith("/grant"))
-        send_message(chat_id, f"{'✅ Akses diberikan' if text.startswith('/grant') else '🚫 Akses dicabut'}\nUser: <code>{html.escape(target)}</code>\nAkses: <b>{html.escape(perm)}</b>")
-        return jsonify({"ok": True})
-
-    if text.startswith("/role "):
-        clear_pending(user_id)
+        set_permission(target, permission, True)
+        audit(user_id, f"grant:{target}:{permission}")
+        send_message(chat_id, f"✅ Akses <b>{html.escape(permission)}</b> diberikan ke <code>{html.escape(target)}</code>.")
+        return
+    if text.startswith("/revoke"):
         if not is_admin(user_id):
             send_message(chat_id, "🔒 Akses admin diperlukan.")
-            return jsonify({"ok": True})
+            return
         parts = text.split()
-        if len(parts) != 3 or parts[2] not in ("admin", "operator", "user"):
+        if len(parts) != 3 or parts[2] not in PERMISSIONS:
+            send_message(chat_id, "Format: <code>/revoke USER_ID PERMISSION</code>")
+            return
+        target, permission = parts[1], parts[2]
+        get_user(target)
+        set_permission(target, permission, False)
+        audit(user_id, f"revoke:{target}:{permission}")
+        send_message(chat_id, f"🚫 Akses <b>{html.escape(permission)}</b> dicabut dari <code>{html.escape(target)}</code>.")
+        return
+    if text.startswith("/role"):
+        if not is_admin(user_id):
+            send_message(chat_id, "🔒 Akses admin diperlukan.")
+            return
+        parts = text.split()
+        if len(parts) != 3 or parts[2] not in {"admin", "operator", "user"}:
             send_message(chat_id, "Format: <code>/role USER_ID admin|operator|user</code>")
-            return jsonify({"ok": True})
+            return
         target, role = parts[1], parts[2]
         get_user(target)
         set_role(target, role)
-        send_message(chat_id, f"✅ Role <b>{html.escape(role.upper())}</b> diberikan ke <code>{html.escape(target)}</code>")
-        return jsonify({"ok": True})
-
-    if text.startswith("/users"):
-        clear_pending(user_id)
-        send_message(chat_id, users_text() if is_admin(user_id) else "🔒 Akses admin diperlukan.")
-        return jsonify({"ok": True})
-
+        audit(user_id, f"role:{target}:{role}")
+        send_message(chat_id, f"👑 Role <b>{html.escape(role)}</b> diterapkan ke <code>{html.escape(target)}</code>.")
+        return
+    if text == "/users":
+        if not is_admin(user_id):
+            send_message(chat_id, "🔒 Akses admin diperlukan.")
+            return
+        send_message(chat_id, users_text())
+        return
     pending = _pending_input.get(str(user_id))
     if pending:
-        if not has_permission(user_id, pending):
-            clear_pending(user_id)
-            send_message(chat_id, "🔒 Akses untuk tool ini belum diberikan.")
-            return jsonify({"ok": True})
-        if not rate_allowed(user_id):
-            send_message(chat_id, "⏱️ Tunggu beberapa detik sebelum request berikutnya.")
-            return jsonify({"ok": True})
         clear_pending(user_id)
-        audit(user_id, f"{pending}_request")
-        send_message(chat_id, "⏳ <b>Memproses...</b>")
+        if not rate_allowed(user_id):
+            send_message(chat_id, "⏳ Tunggu sebentar sebelum melakukan request berikutnya.")
+            return
+        audit(user_id, f"query:{pending}")
         try:
             if pending == "search":
                 result = call_search_api(text)
                 send_long_message(chat_id, search_result_message(result))
             elif pending == "username":
-                value = text.lstrip("@").strip()
-                if not valid_username(value):
+                if not valid_username(text):
                     send_message(chat_id, "❌ Format username tidak valid.")
-                else:
-                    result = query_username_api(value)
-                    send_message(chat_id, format_username_result(value, result))
+                    return
+                result = query_username_api(text)
+                send_message(chat_id, format_username_result(text, result))
             elif pending == "tiktok":
-                value = text.strip()
-                result = query_tiktok(value)
-                send_long_message(chat_id, format_tiktok_result(value, result))
+                result = query_tiktok(text)
+                send_long_message(chat_id, format_tiktok_result(result))
             else:
                 name = {"rekening": "REKENING", "ewallet": "EWALLET", "ai": "AI"}[pending]
                 result = call_configured_api(name, text)
                 send_message(chat_id, safe_api_message(name, result))
-        except RuntimeError as exc:
-            send_message(chat_id, f"⚙️ <b>Konfigurasi belum lengkap</b>\n\n<code>{html.escape(str(exc))}</code>")
-        except requests.RequestException:
-            send_message(chat_id, "❌ Endpoint API tidak dapat dihubungi.")
-        except (ValueError, TypeError):
-            send_message(chat_id, "❌ Respons API tidak valid.")
-        except Exception:
-            send_message(chat_id, "❌ Terjadi kesalahan saat memproses request.")
-        return jsonify({"ok": True})
+        except requests.RequestException as exc:
+            send_message(chat_id, f"❌ Request API gagal: <code>{html.escape(str(exc))}</code>")
+        except Exception as exc:
+            send_message(chat_id, f"❌ Error: <code>{html.escape(str(exc))}</code>")
+        return
+    send_message(chat_id, "Gunakan /start untuk membuka menu.")
 
-    send_message(chat_id, "Gunakan <code>/start</code> untuk membuka menu.", main_menu(user_id))
+
+@app.get("/")
+def health():
+    return jsonify({"ok": True, "service": "gwprojectbot"})
+
+
+@app.post("/webhook")
+def webhook():
+    if WEBHOOK_SECRET:
+        supplied = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if supplied != WEBHOOK_SECRET:
+            return jsonify({"ok": False}), 403
+    update = request.get_json(silent=True) or {}
+    if "callback_query" in update:
+        callback_handler(update["callback_query"])
+    elif "message" in update:
+        handle_message(update["message"])
     return jsonify({"ok": True})
 
 
-init_db()
+with app.app_context():
+    init_db()

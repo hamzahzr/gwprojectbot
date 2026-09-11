@@ -86,9 +86,7 @@ def _number(value):
 
 def _public_author(item):
     author = item.get("author")
-    if isinstance(author, dict):
-        return author
-    return {}
+    return author if isinstance(author, dict) else {}
 
 
 def _extract_items(result):
@@ -103,6 +101,19 @@ def _extract_items(result):
         if isinstance(value, dict):
             return [value]
     return [result] if result else []
+
+
+def _line(lines, label, value, limit=700):
+    if value is None or value == "":
+        return
+    if isinstance(value, list):
+        value = ", ".join(str(x) for x in value[:50])
+    elif isinstance(value, dict):
+        value = ", ".join(f"{k}: {v}" for k, v in value.items())
+    text = str(value)
+    if len(text) > limit:
+        text = text[:limit] + "…"
+    lines.append(f"{label}: {html.escape(text)}")
 
 
 def format_tiktok_result(value, result):
@@ -120,102 +131,61 @@ def format_tiktok_result(value, result):
         f"📦 Item API: <b>{len(items)}</b>",
         "",
     ]
-    shown = 0
 
-    for item in items[:50]:
+    for index, item in enumerate(items, 1):
         if not isinstance(item, dict):
             continue
-
         author = _public_author(item)
-        username = _first(item, "username", "unique_id", "uniqueId") or _first(
-            author, "username", "unique_id", "uniqueId"
-        )
-        nickname = _first(item, "nickname", "display_name", "nickname") or _first(
-            author, "nickname", "display_name"
-        )
-        profile_url = _first(item, "profile_url", "author_url", "profileUrl") or _first(
-            author, "profile_url", "url", "profileUrl"
-        )
-        video_url = _first(item, "video_url", "webVideoUrl", "share_url", "shareUrl")
-        description = _first(item, "description", "content_desc", "desc", "title", "text")
-        create_time = _first(item, "create_time", "createTime", "published_at", "date")
-        verified = _first(item, "verified", "is_verified", "verified_account")
-        followers = _first(item, "follower_count", "followers", "fans", "fans_count") or _first(
-            author, "follower_count", "followers", "fans", "fans_count"
-        )
-        following = _first(item, "following_count", "following") or _first(
-            author, "following_count", "following"
-        )
-        likes_total = _first(item, "heart_count", "total_likes", "likes") or _first(
-            author, "heart_count", "total_likes", "likes"
-        )
-        videos = _first(item, "video_count", "videos_count") or _first(
-            author, "video_count", "videos_count"
-        )
-        views = _first(item, "play_count", "view_count", "views")
-        likes = _first(item, "digg_count", "like_count", "likes_count")
-        comments = _first(item, "comment_count", "comments_count")
-        shares = _first(item, "share_count", "shares_count")
-        saves = _first(item, "collect_count", "save_count", "saves_count")
-        duration = _first(item, "duration", "video_duration")
-        music = _first(item, "music_name", "music", "sound_name")
-        region = _first(item, "region", "region_code", "country")
-        hashtags = _first(item, "hashtags", "hash_tags")
+        lines.append(f"<b>━━ ITEM {index} ━━</b>")
 
-        block = []
-        if username:
-            block.append(f"👤 <b>{html.escape(str(username))}</b>")
-        if nickname and str(nickname) != str(username):
-            block.append(f"Nama: {html.escape(str(nickname))}")
-        if verified is not None:
-            block.append(f"✓ Terverifikasi: <b>{'Ya' if bool(verified) else 'Tidak'}</b>")
-        if profile_url:
-            block.append(f"🔗 Profil: {html.escape(str(profile_url))}")
-        if followers is not None:
-            block.append(f"👥 Followers: <b>{html.escape(_number(followers))}</b>")
-        if following is not None:
-            block.append(f"➕ Following: <b>{html.escape(_number(following))}</b>")
-        if likes_total is not None:
-            block.append(f"❤️ Total likes: <b>{html.escape(_number(likes_total))}</b>")
-        if videos is not None:
-            block.append(f"🎞️ Total video: <b>{html.escape(_number(videos))}</b>")
-        if description:
-            block.append(f"📝 <b>Caption:</b> {html.escape(str(description)[:500])}")
-        if video_url:
-            block.append(f"🎬 Video: {html.escape(str(video_url))}")
-        if views is not None:
-            block.append(f"▶️ Views: <b>{html.escape(_number(views))}</b>")
-        if likes is not None:
-            block.append(f"❤️ Likes: <b>{html.escape(_number(likes))}</b>")
-        if comments is not None:
-            block.append(f"💬 Komentar: <b>{html.escape(_number(comments))}</b>")
-        if shares is not None:
-            block.append(f"↗️ Shares: <b>{html.escape(_number(shares))}</b>")
-        if saves is not None:
-            block.append(f"🔖 Saves: <b>{html.escape(_number(saves))}</b>")
-        if duration is not None:
-            block.append(f"⏱️ Durasi: <b>{html.escape(str(duration))}</b>")
-        if music:
-            block.append(f"🎵 Musik: {html.escape(str(music)[:250])}")
-        if create_time:
-            block.append(f"🗓️ Waktu: <b>{html.escape(str(create_time))}</b>")
-        if region:
-            block.append(f"🌍 Region: <b>{html.escape(str(region))}</b>")
-        if hashtags:
-            if isinstance(hashtags, list):
-                hashtags = " ".join(str(x) for x in hashtags[:30])
-            block.append(f"#️⃣ Hashtag: {html.escape(str(hashtags)[:500])}")
+        # Profile / creator fields
+        _line(lines, "👤 Username", _first(item, "username", "unique_id", "uniqueId") or _first(author, "username", "unique_id", "uniqueId"))
+        _line(lines, "Nama", _first(item, "nickname", "display_name") or _first(author, "nickname", "display_name"))
+        _line(lines, "Bio", _first(item, "signature", "bio", "description") or _first(author, "signature", "bio"))
+        _line(lines, "Profil", _first(item, "profile_url", "author_url", "profileUrl") or _first(author, "profile_url", "url", "profileUrl"))
+        _line(lines, "Avatar", _first(item, "avatar", "avatar_url", "avatarLarger", "cover") or _first(author, "avatar", "avatar_url", "avatarLarger"))
+        _line(lines, "Verified", _first(item, "verified", "is_verified", "verified_account") or _first(author, "verified", "is_verified"))
+        _line(lines, "Followers", _number(_first(item, "follower_count", "followers", "fans", "fans_count") or _first(author, "follower_count", "followers", "fans", "fans_count")))
+        _line(lines, "Following", _number(_first(item, "following_count", "following") or _first(author, "following_count", "following")))
+        _line(lines, "Total Likes", _number(_first(item, "heart_count", "total_likes", "likes") or _first(author, "heart_count", "total_likes", "likes")))
+        _line(lines, "Total Video", _number(_first(item, "video_count", "videos_count") or _first(author, "video_count", "videos_count")))
+        _line(lines, "Region", _first(item, "region", "region_code", "country") or _first(author, "region", "region_code", "country"))
+        _line(lines, "Sec UID", _first(item, "secUid", "sec_uid") or _first(author, "secUid", "sec_uid"))
 
-        if block:
-            lines.extend(block + ["────────────────", ""])
-            shown += 1
+        # Video fields
+        _line(lines, "Video ID", _first(item, "id", "video_id", "videoId"))
+        _line(lines, "Video URL", _first(item, "video_url", "webVideoUrl", "share_url", "shareUrl"))
+        _line(lines, "Caption", _first(item, "description", "content_desc", "desc", "title", "text"))
+        _line(lines, "Views", _number(_first(item, "play_count", "view_count", "views")))
+        _line(lines, "Likes", _number(_first(item, "digg_count", "like_count", "likes_count")))
+        _line(lines, "Komentar", _number(_first(item, "comment_count", "comments_count")))
+        _line(lines, "Shares", _number(_first(item, "share_count", "shares_count")))
+        _line(lines, "Saves", _number(_first(item, "collect_count", "save_count", "saves_count")))
+        _line(lines, "Durasi", _first(item, "duration", "video_duration"))
+        _line(lines, "Waktu", _first(item, "create_time", "createTime", "published_at", "date"))
+        _line(lines, "Musik", _first(item, "music_name", "music", "sound_name"))
+        _line(lines, "Musik Author", _first(item, "music_author", "music_author_name"))
+        _line(lines, "Music ID", _first(item, "music_id", "musicId"))
+        _line(lines, "Thumbnail", _first(item, "cover", "cover_url", "thumbnail", "thumbnail_url"))
+        _line(lines, "Download URL", _first(item, "download_url", "downloadUrl"))
+        _line(lines, "Play URL", _first(item, "play_url", "playUrl"))
+        _line(lines, "Hashtag", _first(item, "hashtags", "hash_tags"))
+        _line(lines, "Mentions", _first(item, "mentions", "mention_list"))
+        _line(lines, "Location", _first(item, "location", "location_name"))
+        _line(lines, "Language", _first(item, "language", "lang"))
+        _line(lines, "Status", _first(item, "status", "item_status"))
 
-    if not shown:
-        return (
-            "🎵 <b>TIKTOK SCRAPER</b>\n\n"
-            f"Input: <code>{html.escape(str(value))}</code>\n\n"
-            "API merespons, tetapi field publik yang dikenali tidak tersedia."
-        )
+        # Other public fields commonly returned by scrapers.
+        for key in (
+            "category", "region_code", "country_code", "share_count", "comment_count",
+            "collect_count", "download_count", "forward_count", "repost_count",
+            "is_ad", "is_commerce", "is_original", "is_top", "is_private",
+            "item_type", "aweme_id", "createTime", "timestamp", "updated_at",
+        ):
+            if key in item:
+                _line(lines, key, item.get(key), limit=500)
 
-    lines.append(f"📊 <b>Hasil ditampilkan: {shown}</b>")
-    return "\n".join(lines)[:3900]
+        lines.append("────────────────────────")
+        lines.append("")
+
+    return "\n".join(lines)

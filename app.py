@@ -8,6 +8,8 @@ from threading import Lock
 import requests
 from flask import Flask, jsonify, request
 
+from username_api import query_username_api
+
 app = Flask(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -194,60 +196,34 @@ def query_api(query):
     return response.json()
 
 
-def _pretty_key(key):
-    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", str(key)).replace("_", " ").replace("-", " ")
-    return " ".join(text.split()).title()
-
-
-def _compact_value(value):
-    if isinstance(value, dict):
-        return " | ".join(f"{_pretty_key(k)}: {v}" for k, v in value.items() if v not in (None, "", [], {}))
-    if isinstance(value, list): return ", ".join(str(v) for v in value)
-    return value
-
-
-def _plain_value(value):
-    if isinstance(value, (dict, list)): value = _compact_value(value)
-    return str(value).replace("\r", " ").replace("\n", " ").strip()
-
-
-def _format_record(record, number):
-    lines = [f"📄 RECORD #{number}", "────────────────────────────────"]
-    if isinstance(record, dict):
-        fields = [(_pretty_key(k), _plain_value(v)) for k, v in record.items() if v not in (None, "", [], {})]
-        width = min(max((len(k) for k, _ in fields), default=10), 22)
-        for key, value in fields: lines.append(f"{key:<{width}} : {value}")
-    else: lines.append(f"Value{' ':<15}: {_plain_value(record)}")
+def format_username_result(username, result):
+    username = username.strip().lstrip("@")
+    if not isinstance(result, list):
+        result = [result] if isinstance(result, dict) else []
+    result = result[:50]
+    found = []
+    for item in result:
+        if not isinstance(item, dict):
+            continue
+        site = str(item.get("site_name") or item.get("site") or "").strip()
+        url = str(item.get("site_url_user") or item.get("url") or "").strip()
+        status = str(item.get("status") or "unknown").strip().lower()
+        if not site or not url:
+            continue
+        found.append((site, url, status))
+    if not found:
+        return f"👤 <b>CEK USERNAME</b>\n\nUsername: <code>{html.escape(username)}</code>\n\n❌ Tidak ditemukan hasil yang dapat ditampilkan."
+    lines = [
+        "👤 <b>HASIL CEK USERNAME</b>",
+        "",
+        f"Username: <code>{html.escape(username)}</code>",
+        f"Total: <b>{len(found)}</b>",
+        "",
+    ]
+    for index, (site, url, status) in enumerate(found, 1):
+        lines.append(f"{index}. <b>{html.escape(site)}</b> — <code>{html.escape(status)}</code>")
+        lines.append(f"   {html.escape(url)}")
     return "\n".join(lines)
-
-
-def format_simple_result(query, result):
-    if not isinstance(result, dict): return ["❌ Data tidak dapat ditampilkan."]
-    if result.get("Error code"): return ["❌ Pencarian gagal. Silakan coba lagi."]
-    listing = result.get("List")
-    if not isinstance(listing, dict): return ["<b>GWPROJECT RESULT</b>\n\nTidak ada data ditemukan."]
-    sources, total = [], 0
-    for source_name, source_data in listing.items():
-        if str(source_name).lower() == "no results found": continue
-        records = source_data if isinstance(source_data, list) else [source_data]
-        records = [r for r in records if r not in (None, "", [], {})]
-        if records: sources.append((str(source_name), records)); total += len(records)
-    if not sources: return ["<b>GWPROJECT RESULT</b>\n\nTidak ada data ditemukan."]
-    header = ("<b>╔══════════════════════════════════╗</b>\n<b>║          GWPROJECT RESULT        ║</b>\n<b>╚══════════════════════════════════╝</b>\n\n" + f"🔎 <b>QUERY</b>\n<code>{html.escape(detect_query_type(query))}  {html.escape(query)}</code>\n\n")
-    chunks, current, record_no = [], header, 0
-    for source_index, (source_name, records) in enumerate(sources, 1):
-        block = f"📁 <b>SOURCE #{source_index}</b>\n<code>{html.escape(source_name)}</code>\n\n"
-        if len(current) + len(block) > 3800 and current != header: chunks.append(current.rstrip()); current = ""
-        current += block
-        for record in records:
-            record_no += 1
-            block = f"<pre>{html.escape(_format_record(record, record_no))}</pre>\n\n"
-            if len(current) + len(block) > 3800 and current: chunks.append(current.rstrip()); current = ""
-            current += block
-    summary = f"📊 <b>SUMMARY</b>\n────────────────────────────────\nSources : {len(sources)}\nRecords : {total}"
-    if len(current) + len(summary) > 3900 and current: chunks.append(current.rstrip()); current = ""
-    current += summary; chunks.append(current.rstrip())
-    return chunks
 
 
 def status_text(user_id):
@@ -295,19 +271,22 @@ def callback_handler(cb):
             edit_message(chat_id, message_id, "<b>🧰 ALL TOOLS</b>\n\nPilih layanan yang tersedia.", tools_menu(uid))
         elif data == "ai":
             clear_pending(uid)
-            if not has_permission(uid, "ai"): edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses AI Analysis.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
+            if not has_permission(uid, "ai"):
+                edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses AI Analysis.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
             else:
                 set_pending(uid, "ai")
                 edit_message(chat_id, message_id, "🧠 <b>AI ANALYSIS</b>\n\nSilakan kirim pertanyaan atau teks yang ingin dianalisis.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
         elif data == "search":
             clear_pending(uid)
-            if not has_permission(uid, "search"): edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses Pencarian.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
+            if not has_permission(uid, "search"):
+                edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses Pencarian.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
             else:
                 set_pending(uid, "search")
                 edit_message(chat_id, message_id, "🔎 <b>SEARCH</b>\n\nSilakan masukkan data yang ingin dicari.\nTidak perlu menggunakan command.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
         elif data == "username":
             clear_pending(uid)
-            if not has_permission(uid, "search"): edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses Cek Username.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
+            if not has_permission(uid, "search"):
+                edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses Cek Username.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
             else:
                 set_pending(uid, "username")
                 edit_message(chat_id, message_id, "👤 <b>CEK USERNAME</b>\n\nSilakan masukkan username yang ingin diperiksa.\nContoh: <code>@username</code>", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
@@ -321,12 +300,16 @@ def callback_handler(cb):
             edit_message(chat_id, message_id, "💳 <b>CEK EWALLET</b>\n\nSilakan masukkan nomor e-wallet.\nAPI akan disambungkan setelah endpoint diberikan.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
         elif data == "history":
             clear_pending(uid)
-            if not has_permission(uid, "history"): edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses Riwayat.", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
-            else: edit_message(chat_id, message_id, "📚 <b>RIWAYAT</b>\n\nAktivitas Anda tercatat untuk audit. Detail pencarian sensitif tidak ditampilkan di menu riwayat.", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
+            if not has_permission(uid, "history"):
+                edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses Riwayat.", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
+            else:
+                edit_message(chat_id, message_id, "📚 <b>RIWAYAT</b>\n\nAktivitas Anda tercatat untuk audit.", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
         elif data == "settings":
             clear_pending(uid)
-            if not is_admin(uid): edit_message(chat_id, message_id, "🔒 Akses admin diperlukan.", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
-            else: edit_message(chat_id, message_id, "⚙️ <b>PENGATURAN AKSES</b>\n\nKelola pengguna dan izin dari menu ini.\n\nContoh:\n<code>/grant 123456789 search</code>\n<code>/revoke 123456789 search</code>\n<code>/role 123456789 operator</code>", settings_menu())
+            if not is_admin(uid):
+                edit_message(chat_id, message_id, "🔒 Akses admin diperlukan.", {"inline_keyboard": [[button("🔙 KEMBALI", "home")]]})
+            else:
+                edit_message(chat_id, message_id, "⚙️ <b>PENGATURAN AKSES</b>\n\nKelola pengguna dan izin dari menu ini.", settings_menu())
         elif data == "users":
             if not is_admin(uid): return
             edit_message(chat_id, message_id, users_text(), {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
@@ -374,13 +357,13 @@ def webhook():
 
     if text.startswith("/start"):
         clear_pending(user_id)
-        send_message(chat_id, "<b>🛰️ GW-PROJECT</b>\n\nPrivate operations console\n\nPilih layanan dari menu di bawah.\nSetiap request dicatat untuk audit dan akses dikontrol berdasarkan role/izin.", main_menu(user_id))
+        send_message(chat_id, "<b>🛰️ GW-PROJECT</b>\n\nPrivate operations console\n\nPilih layanan dari menu di bawah.", main_menu(user_id))
         return jsonify({"ok": True})
 
     if text.startswith("/grant ") or text.startswith("/revoke "):
         clear_pending(user_id)
         if not is_admin(user_id):
-            send_message(chat_id, "🔒 Akses admin diperlukan."); return jsonify({"ok": True})
+            send_message(chat_id, "🔒 Akses admin diperlukan"); return jsonify({"ok": True})
         parts = text.split()
         if len(parts) != 3 or parts[2] not in PERMISSIONS:
             send_message(chat_id, "Format: <code>/grant USER_ID search</code>\nAkses: search, ai, history, tools"); return jsonify({"ok": True})
@@ -391,7 +374,7 @@ def webhook():
 
     if text.startswith("/role "):
         clear_pending(user_id)
-        if not is_admin(user_id): send_message(chat_id, "🔒 Akses admin diperlukan."); return jsonify({"ok": True})
+        if not is_admin(user_id): send_message(chat_id, "🔒 Akses admin diperlukan"); return jsonify({"ok": True})
         parts = text.split()
         if len(parts) != 3 or parts[2] not in ("admin", "operator", "user"):
             send_message(chat_id, "Format: <code>/role USER_ID admin|operator|user</code>"); return jsonify({"ok": True})
@@ -407,14 +390,43 @@ def webhook():
         return jsonify({"ok": True})
 
     pending = _pending_input.get(str(user_id))
-    if pending in ("search", "username"):
+
+    if pending == "username":
+        if not has_permission(user_id, "search"):
+            clear_pending(user_id)
+            send_message(chat_id, "🔒 <b>Akses Cek Username belum diberikan.</b>\nHubungi admin untuk mendapatkan izin.")
+            return jsonify({"ok": True})
+        username = text.strip().lstrip("@")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,50}", username):
+            send_message(chat_id, "❌ Username tidak valid.")
+            return jsonify({"ok": True})
+        if not rate_allowed(user_id):
+            send_message(chat_id, "⏱️ Tunggu beberapa detik sebelum pengecekan berikutnya.")
+            return jsonify({"ok": True})
+        clear_pending(user_id)
+        audit(user_id, "username_check")
+        send_message(chat_id, f"🔎 <b>Mengecek username...</b>\n\n<code>@{html.escape(username)}</code>")
+        try:
+            result = query_username_api(username)
+            output = format_username_result(username, result)
+            send_message(chat_id, output, {"inline_keyboard": [[button("🔎 CEK LAGI", "username")], [button("🔙 KEMBALI", "tools")]]})
+        except requests.Timeout:
+            send_message(chat_id, "⏱️ <b>Timeout</b>\n\nPengecekan membutuhkan waktu terlalu lama.")
+        except requests.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else "unknown"
+            send_message(chat_id, f"❌ <b>API ERROR</b>\n\nStatus: <code>{code}</code>")
+        except (ValueError, TypeError):
+            send_message(chat_id, "❌ Respons API tidak valid.")
+        except Exception:
+            send_message(chat_id, "❌ Gagal melakukan pengecekan username.")
+        return jsonify({"ok": True})
+
+    if pending == "search":
         if not has_permission(user_id, "search"):
             clear_pending(user_id)
             send_message(chat_id, "🔒 <b>Akses Pencarian belum diberikan.</b>\nHubungi admin untuk mendapatkan izin.")
             return jsonify({"ok": True})
         query = text
-        if pending == "username" and query.startswith("@"):
-            query = query[1:]
         if not allowed_query(query):
             send_message(chat_id, "❌ Format input tidak valid. Silakan kirim data yang benar.")
             return jsonify({"ok": True})
@@ -422,7 +434,7 @@ def webhook():
             send_message(chat_id, "⏱️ Tunggu beberapa detik sebelum pencarian berikutnya.")
             return jsonify({"ok": True})
         clear_pending(user_id)
-        audit(user_id, "username_search" if pending == "username" else "search")
+        audit(user_id, "search")
         send_message(chat_id, "🔎 <b>Mencari...</b>")
         try:
             result = query_api(query)

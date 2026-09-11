@@ -6,3 +6,5 @@ deployment:
     - /bin/cp username_api.py $APPPATH/username_api.py
     - /bin/cp tiktok_api.py $APPPATH/tiktok_api.py
     - /bin/cp requirements.txt $APPPATH/requirements.txt
+    - /bin/cp deploy_patch.py $APPPATH/deploy_patch.py
+    - cd $APPPATH && python3 deploy_patch.py

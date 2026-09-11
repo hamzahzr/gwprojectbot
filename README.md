@@ -38,7 +38,3 @@ After the application is running, set the Telegram webhook to:
 `https://YOUR-DOMAIN/bot/webhook`
 
 If `WEBHOOK_SECRET` is configured, use the same secret when setting the webhook.
-
-## Safety
-
-The initial implementation is intentionally limited to email/domain checks and returns a summary rather than forwarding raw breach records or personal data to Telegram. Use only with data you are authorized to inspect.

@@ -50,7 +50,10 @@ def query_tiktok(value):
     response = requests.post(
         TIKTOK_API_URL,
         json=payload,
-        headers={"Authorization": f"Bearer {TIKTOK_API_TOKEN}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {TIKTOK_API_TOKEN}",
+            "Content-Type": "application/json",
+        },
         timeout=300,
     )
     response.raise_for_status()
@@ -63,6 +66,13 @@ def _first(item, *keys):
         if value is not None and value != "":
             return value
     return None
+
+
+def _nested(item, container, *keys):
+    value = item.get(container)
+    if not isinstance(value, dict):
+        return None
+    return _first(value, *keys)
 
 
 def _number(value):
@@ -93,21 +103,25 @@ def _extract_items(result):
     return [result] if result else []
 
 
-def _line(lines, label, value, limit=350):
+def _stringify(value):
+    if isinstance(value, list):
+        return ", ".join(_stringify(x) for x in value)
+    if isinstance(value, dict):
+        return ", ".join(f"{k}: {_stringify(v)}" for k, v in value.items())
+    if isinstance(value, bool):
+        return "Ya" if value else "Tidak"
+    return str(value)
+
+
+def _line(lines, label, value):
     if value is None or value == "":
         return
-    if isinstance(value, list):
-        value = ", ".join(str(x) for x in value[:30])
-    elif isinstance(value, dict):
-        value = ", ".join(f"{k}: {v}" for k, v in value.items())
-    text = str(value)
-    if len(text) > limit:
-        text = text[:limit] + "…"
+    text = _stringify(value)
     lines.append(f"{label}: {html.escape(text)}")
 
 
 def format_tiktok_result(value, result):
-    """Show the broadest practical set of public TikTok fields without exceeding Telegram's message limit."""
+    """Format all recognized public TikTok fields; app.py handles Telegram chunking."""
     items = _extract_items(result)
     if not items:
         return (
@@ -119,17 +133,19 @@ def format_tiktok_result(value, result):
     lines = [
         "🎵 <b>TIKTOK SCRAPER</b>",
         f"Input: <code>{html.escape(str(value))}</code>",
-        f"📦 Item API: <b>{len(items)}</b>",
+        f"📦 Total item API: <b>{len(items)}</b>",
         "",
     ]
 
     for index, item in enumerate(items, 1):
         if not isinstance(item, dict):
             continue
+
         author = _public_author(item)
         lines.append(f"<b>━━ ITEM {index} ━━</b>")
 
-        _line(lines, "👤 Username", _first(item, "username", "unique_id", "uniqueId") or _first(author, "username", "unique_id", "uniqueId"))
+        lines.append("<b>👤 PROFIL</b>")
+        _line(lines, "Username", _first(item, "username", "unique_id", "uniqueId") or _first(author, "username", "unique_id", "uniqueId"))
         _line(lines, "Nama", _first(item, "nickname", "display_name") or _first(author, "nickname", "display_name"))
         _line(lines, "Bio", _first(item, "signature", "bio") or _first(author, "signature", "bio"))
         _line(lines, "Profil", _first(item, "profile_url", "author_url", "profileUrl") or _first(author, "profile_url", "url", "profileUrl"))
@@ -141,41 +157,47 @@ def format_tiktok_result(value, result):
         _line(lines, "Total Video", _number(_first(item, "video_count", "videos_count") or _first(author, "video_count", "videos_count")))
         _line(lines, "Region", _first(item, "region", "region_code", "country") or _first(author, "region", "region_code", "country"))
         _line(lines, "Sec UID", _first(item, "secUid", "sec_uid") or _first(author, "secUid", "sec_uid"))
+        _line(lines, "Language", _first(item, "language", "lang") or _first(author, "language", "lang"))
+        _line(lines, "Private", _first(item, "is_private", "private") or _first(author, "is_private", "private"))
+
+        lines.append("<b>🎬 VIDEO</b>")
         _line(lines, "Video ID", _first(item, "id", "video_id", "videoId", "aweme_id"))
         _line(lines, "Video URL", _first(item, "video_url", "webVideoUrl", "share_url", "shareUrl"))
         _line(lines, "Caption", _first(item, "description", "content_desc", "desc", "title", "text"))
-        _line(lines, "Views", _number(_first(item, "play_count", "view_count", "views")))
-        _line(lines, "Likes", _number(_first(item, "digg_count", "like_count", "likes_count")))
-        _line(lines, "Komentar", _number(_first(item, "comment_count", "comments_count")))
-        _line(lines, "Shares", _number(_first(item, "share_count", "shares_count")))
-        _line(lines, "Saves", _number(_first(item, "collect_count", "save_count", "saves_count")))
+        _line(lines, "Views", _number(_first(item, "play_count", "view_count", "views") or _nested(item, "stats", "playCount", "play_count", "views")))
+        _line(lines, "Likes", _number(_first(item, "digg_count", "like_count", "likes_count") or _nested(item, "stats", "diggCount", "digg_count", "likes")))
+        _line(lines, "Komentar", _number(_first(item, "comment_count", "comments_count") or _nested(item, "stats", "commentCount", "comment_count", "comments")))
+        _line(lines, "Shares", _number(_first(item, "share_count", "shares_count") or _nested(item, "stats", "shareCount", "share_count", "shares")))
+        _line(lines, "Saves", _number(_first(item, "collect_count", "save_count", "saves_count") or _nested(item, "stats", "collectCount", "collect_count", "saves")))
         _line(lines, "Download", _number(_first(item, "download_count", "downloads")))
-        _line(lines, "Durasi", _first(item, "duration", "video_duration"))
+        _line(lines, "Durasi", _first(item, "duration", "video_duration") or _nested(item, "video", "duration", "duration_ms"))
         _line(lines, "Waktu", _first(item, "create_time", "createTime", "published_at", "date", "timestamp"))
-        _line(lines, "Musik", _first(item, "music_name", "music", "sound_name"))
-        _line(lines, "Music Author", _first(item, "music_author", "music_author_name"))
-        _line(lines, "Music ID", _first(item, "music_id", "musicId"))
         _line(lines, "Thumbnail", _first(item, "cover", "cover_url", "thumbnail", "thumbnail_url"))
         _line(lines, "Play URL", _first(item, "play_url", "playUrl"))
-        _line(lines, "Hashtag", _first(item, "hashtags", "hash_tags"))
+        _line(lines, "Item Type", _first(item, "item_type", "type"))
+
+        lines.append("<b>🎵 MUSIK</b>")
+        _line(lines, "Musik", _first(item, "music_name", "sound_name") or _nested(item, "music", "title", "music_name", "name"))
+        _line(lines, "Music Author", _first(item, "music_author", "music_author_name") or _nested(item, "music", "author", "music_author", "authorName"))
+        _line(lines, "Music ID", _first(item, "music_id", "musicId") or _nested(item, "music", "id", "music_id", "musicId"))
+
+        lines.append("<b>🏷️ KONTEN</b>")
+        _line(lines, "Hashtag", _first(item, "hashtags", "hash_tags", "hashtag_list"))
         _line(lines, "Mentions", _first(item, "mentions", "mention_list"))
         _line(lines, "Location", _first(item, "location", "location_name"))
+        _line(lines, "Category", _first(item, "category"))
         _line(lines, "Language", _first(item, "language", "lang"))
         _line(lines, "Status", _first(item, "status", "item_status"))
 
+        lines.append("<b>📊 METADATA PUBLIK</b>")
         for key in (
-            "category", "region_code", "country_code", "forward_count", "repost_count",
-            "is_ad", "is_commerce", "is_original", "is_top", "is_private", "item_type",
-            "updated_at",
+            "region_code", "country_code", "forward_count", "repost_count",
+            "is_ad", "is_commerce", "is_original", "is_top", "updated_at",
         ):
             if key in item:
-                _line(lines, key, item.get(key), limit=250)
+                _line(lines, key, item.get(key))
 
-        lines.append("────────────────────────")
+        lines.append("────────────────")
         lines.append("")
 
-    text = "\n".join(lines)
-    # Telegram sendMessage has a ~4096 character limit. Keep the result safely below it.
-    if len(text) > 3900:
-        text = text[:3800] + "\n\n⚠️ <i>Output melebihi batas Telegram. Gunakan input video/username yang lebih spesifik untuk melihat detail berikutnya.</i>"
-    return text
+    return "\n".join(lines).rstrip()

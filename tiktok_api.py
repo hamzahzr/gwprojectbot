@@ -84,6 +84,31 @@ def _number(value):
         return str(value)
 
 
+def _bool_label(value, yes="Yes", no="No"):
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y", "on"}:
+            return yes
+        if normalized in {"false", "0", "no", "n", "off"}:
+            return no
+    return yes if bool(value) else no
+
+
+def _privacy_label(value, everyone="Everyone 🌎", restricted="Restricted/Friends 🚫"):
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return everyone if value else restricted
+    text = str(value).strip().lower()
+    if text in {"everyone", "public", "1", "true", "yes", "all"}:
+        return everyone
+    if text in {"friends", "friend", "restricted", "private", "0", "false", "no"}:
+        return restricted
+    return str(value)
+
+
 def _public_author(item):
     author = item.get("author")
     return author if isinstance(author, dict) else {}
@@ -109,31 +134,42 @@ def _stringify(value):
     if isinstance(value, dict):
         return ", ".join(f"{k}: {_stringify(v)}" for k, v in value.items())
     if isinstance(value, bool):
-        return "Ya" if value else "Tidak"
+        return "Yes" if value else "No"
     return str(value)
 
 
-def _line(lines, label, value):
+def _add(lines, label, value, empty="None"):
     if value is None or value == "":
-        return
-    text = _stringify(value)
-    lines.append(f"{label}: {html.escape(text)}")
+        value = empty
+    lines.append(f"{label:<18} {html.unescape(_stringify(value))}")
+
+
+def _section(lines, title):
+    lines.append(f"--- [ {title} ] ---")
+
+
+def _profile_fields(item, author):
+    def pick(*keys):
+        return _first(item, *keys) or _first(author, *keys)
+    return pick
 
 
 def format_tiktok_result(value, result):
-    """Format all recognized public TikTok fields; app.py handles Telegram chunking."""
+    """Create a detailed plain-text report of public TikTok profile/video fields."""
     items = _extract_items(result)
     if not items:
         return (
-            "🎵 <b>TIKTOK SCRAPER</b>\n\n"
-            f"Input: <code>{html.escape(str(value))}</code>\n\n"
+            "================ TIKTOK SCRAPER ================\n"
+            f"Input: {value}\n\n"
             "Tidak ada data publik yang ditemukan."
         )
 
     lines = [
-        "🎵 <b>TIKTOK SCRAPER</b>",
-        f"Input: <code>{html.escape(str(value))}</code>",
-        f"📦 Total item API: <b>{len(items)}</b>",
+        "==============================================================",
+        "                    TIKTOK SCRAPER",
+        "==============================================================",
+        f"Input: {value}",
+        f"Total item API: {len(items)}",
         "",
     ]
 
@@ -142,62 +178,92 @@ def format_tiktok_result(value, result):
             continue
 
         author = _public_author(item)
-        lines.append(f"<b>━━ ITEM {index} ━━</b>")
+        pick = _profile_fields(item, author)
 
-        lines.append("<b>👤 PROFIL</b>")
-        _line(lines, "Username", _first(item, "username", "unique_id", "uniqueId") or _first(author, "username", "unique_id", "uniqueId"))
-        _line(lines, "Nama", _first(item, "nickname", "display_name") or _first(author, "nickname", "display_name"))
-        _line(lines, "Bio", _first(item, "signature", "bio") or _first(author, "signature", "bio"))
-        _line(lines, "Profil", _first(item, "profile_url", "author_url", "profileUrl") or _first(author, "profile_url", "url", "profileUrl"))
-        _line(lines, "Avatar", _first(item, "avatar", "avatar_url", "avatarLarger") or _first(author, "avatar", "avatar_url", "avatarLarger"))
-        _line(lines, "Verified", _first(item, "verified", "is_verified", "verified_account") or _first(author, "verified", "is_verified"))
-        _line(lines, "Followers", _number(_first(item, "follower_count", "followers", "fans", "fans_count") or _first(author, "follower_count", "followers", "fans", "fans_count")))
-        _line(lines, "Following", _number(_first(item, "following_count", "following") or _first(author, "following_count", "following")))
-        _line(lines, "Total Likes", _number(_first(item, "heart_count", "total_likes", "likes") or _first(author, "heart_count", "total_likes", "likes")))
-        _line(lines, "Total Video", _number(_first(item, "video_count", "videos_count") or _first(author, "video_count", "videos_count")))
-        _line(lines, "Region", _first(item, "region", "region_code", "country") or _first(author, "region", "region_code", "country"))
-        _line(lines, "Sec UID", _first(item, "secUid", "sec_uid") or _first(author, "secUid", "sec_uid"))
-        _line(lines, "Language", _first(item, "language", "lang") or _first(author, "language", "lang"))
-        _line(lines, "Private", _first(item, "is_private", "private") or _first(author, "is_private", "private"))
+        if len(items) > 1:
+            _section(lines, f"ITEM {index}")
 
-        lines.append("<b>🎬 VIDEO</b>")
-        _line(lines, "Video ID", _first(item, "id", "video_id", "videoId", "aweme_id"))
-        _line(lines, "Video URL", _first(item, "video_url", "webVideoUrl", "share_url", "shareUrl"))
-        _line(lines, "Caption", _first(item, "description", "content_desc", "desc", "title", "text"))
-        _line(lines, "Views", _number(_first(item, "play_count", "view_count", "views") or _nested(item, "stats", "playCount", "play_count", "views")))
-        _line(lines, "Likes", _number(_first(item, "digg_count", "like_count", "likes_count") or _nested(item, "stats", "diggCount", "digg_count", "likes")))
-        _line(lines, "Komentar", _number(_first(item, "comment_count", "comments_count") or _nested(item, "stats", "commentCount", "comment_count", "comments")))
-        _line(lines, "Shares", _number(_first(item, "share_count", "shares_count") or _nested(item, "stats", "shareCount", "share_count", "shares")))
-        _line(lines, "Saves", _number(_first(item, "collect_count", "save_count", "saves_count") or _nested(item, "stats", "collectCount", "collect_count", "saves")))
-        _line(lines, "Download", _number(_first(item, "download_count", "downloads")))
-        _line(lines, "Durasi", _first(item, "duration", "video_duration") or _nested(item, "video", "duration", "duration_ms"))
-        _line(lines, "Waktu", _first(item, "create_time", "createTime", "published_at", "date", "timestamp"))
-        _line(lines, "Thumbnail", _first(item, "cover", "cover_url", "thumbnail", "thumbnail_url"))
-        _line(lines, "Play URL", _first(item, "play_url", "playUrl"))
-        _line(lines, "Item Type", _first(item, "item_type", "type"))
+        _section(lines, "BASIC IDENTITY")
+        _add(lines, "Username:", pick("username", "unique_id", "uniqueId"))
+        _add(lines, "Nickname:", pick("nickname", "display_name"))
+        _add(lines, "Account ID:", pick("uid", "user_id", "userId", "account_id", "id") if not _first(item, "id", "video_id", "videoId", "aweme_id") else pick("uid", "user_id", "userId", "account_id"))
+        _add(lines, "Secret UID:", pick("secUid", "sec_uid"))
+        _add(lines, "Region/Country:", pick("region", "region_code", "country", "country_code"))
+        _add(lines, "Language:", pick("language", "lang"))
+        _add(lines, "Verified:", _bool_label(pick("verified", "is_verified", "verified_account"), yes="Yes ✅", no="No ❌"))
+        lines.append("")
 
-        lines.append("<b>🎵 MUSIK</b>")
-        _line(lines, "Musik", _first(item, "music_name", "sound_name") or _nested(item, "music", "title", "music_name", "name"))
-        _line(lines, "Music Author", _first(item, "music_author", "music_author_name") or _nested(item, "music", "author", "music_author", "authorName"))
-        _line(lines, "Music ID", _first(item, "music_id", "musicId") or _nested(item, "music", "id", "music_id", "musicId"))
+        _section(lines, "BIOGRAPHY & LINKS")
+        _add(lines, "Signature:", pick("signature", "bio", "description"))
+        _add(lines, "Bio Link:", pick("bio_link", "bioLink", "bio_url", "link", "website", "website_url"))
+        _add(lines, "Avatar (HD):", pick("avatarLarger", "avatar_hd", "avatar_hd_url", "avatar_url", "avatar"))
+        _add(lines, "Profile URL:", pick("profile_url", "profileUrl", "author_url", "url"))
+        lines.append("")
 
-        lines.append("<b>🏷️ KONTEN</b>")
-        _line(lines, "Hashtag", _first(item, "hashtags", "hash_tags", "hashtag_list"))
-        _line(lines, "Mentions", _first(item, "mentions", "mention_list"))
-        _line(lines, "Location", _first(item, "location", "location_name"))
-        _line(lines, "Category", _first(item, "category"))
-        _line(lines, "Language", _first(item, "language", "lang"))
-        _line(lines, "Status", _first(item, "status", "item_status"))
+        _section(lines, "TIMESTAMPS")
+        _add(lines, "Creation Time:", pick("create_time", "createTime", "created_at", "creation_time", "account_created_at"))
+        _add(lines, "Nick-Modified:", pick("nick_name_modified", "nickname_modified", "nickname_modified_at", "nick_modified_at"), empty="Not Set/None")
+        _add(lines, "Updated At:", pick("updated_at", "updatedAt"))
+        lines.append("")
 
-        lines.append("<b>📊 METADATA PUBLIK</b>")
+        _section(lines, "CORE STATS")
+        _add(lines, "Followers:", _number(pick("follower_count", "followers", "fans", "fans_count")))
+        _add(lines, "Following:", _number(pick("following_count", "following")))
+        _add(lines, "Friend Count:", _number(pick("friend_count", "friends", "friends_count")))
+        _add(lines, "Total Likes:", _number(pick("heart_count", "total_likes", "likes")))
+        _add(lines, "Video Count:", _number(pick("video_count", "videos_count")))
+        _add(lines, "Digg Count:", _number(pick("digg_count", "liked_videos_count", "digg_count_total")))
+        lines.append("")
+
+        _section(lines, "PRIVACY SETTINGS")
+        _add(lines, "Private Account:", _bool_label(pick("is_private", "private"), yes="Yes 🔒", no="No 🔓"))
+        _add(lines, "Download:", _privacy_label(pick("download_permission", "download_setting", "allow_download", "download")))
+        _add(lines, "Duet:", _privacy_label(pick("duet_permission", "duet_setting", "allow_duet", "duet")))
+        _add(lines, "Stitch:", _privacy_label(pick("stitch_permission", "stitch_setting", "allow_stitch", "stitch")))
+        _add(lines, "Comment:", _privacy_label(pick("comment_permission", "comment_setting", "allow_comment", "comment")))
+        lines.append("")
+
+        _section(lines, "ADVANCED DISCOVERY")
+        _add(lines, "Suggest Account:", _bool_label(pick("suggest_account", "suggest_account_for_others", "can_be_suggested"), yes="Yes ❌", no="No ❌"))
+        _add(lines, "Show Music Tab:", _bool_label(pick("show_music_tab", "music_tab_visible", "has_music_tab"), yes="Yes ❌", no="No ❌"))
+        _add(lines, "Show Playlist:", _bool_label(pick("show_playlist", "playlist_visible", "has_playlist"), yes="Yes ❌", no="No ❌"))
+        _add(lines, "Commerce User:", _bool_label(pick("commerce_user", "is_commerce", "commerce_user_info"), yes="Yes 👤", no="No 👤"))
+        _add(lines, "Profile Locked:", _bool_label(pick("profile_locked", "is_profile_locked", "profile_lock"), yes="Yes 🔒", no="No ❌"))
+        lines.append("")
+
+        _section(lines, "VIDEO / CONTENT")
+        _add(lines, "Video ID:", _first(item, "id", "video_id", "videoId", "aweme_id"))
+        _add(lines, "Video URL:", _first(item, "video_url", "webVideoUrl", "share_url", "shareUrl"))
+        _add(lines, "Caption:", _first(item, "description", "content_desc", "desc", "title", "text"))
+        _add(lines, "Views:", _number(_first(item, "play_count", "view_count", "views") or _nested(item, "stats", "playCount", "play_count", "views")))
+        _add(lines, "Likes:", _number(_first(item, "digg_count", "like_count", "likes_count") or _nested(item, "stats", "diggCount", "digg_count", "likes")))
+        _add(lines, "Komentar:", _number(_first(item, "comment_count", "comments_count") or _nested(item, "stats", "commentCount", "comment_count", "comments")))
+        _add(lines, "Shares:", _number(_first(item, "share_count", "shares_count") or _nested(item, "stats", "shareCount", "share_count", "shares")))
+        _add(lines, "Saves:", _number(_first(item, "collect_count", "save_count", "saves_count") or _nested(item, "stats", "collectCount", "collect_count", "saves")))
+        _add(lines, "Download Count:", _number(_first(item, "download_count", "downloads")))
+        _add(lines, "Duration:", _first(item, "duration", "video_duration") or _nested(item, "video", "duration", "duration_ms"))
+        _add(lines, "Published:", _first(item, "published_at", "date", "timestamp", "create_time", "createTime"))
+        _add(lines, "Thumbnail:", _first(item, "cover", "cover_url", "thumbnail", "thumbnail_url"))
+        _add(lines, "Play URL:", _first(item, "play_url", "playUrl"))
+        _add(lines, "Item Type:", _first(item, "item_type", "type"))
+        lines.append("")
+
+        _section(lines, "MUSIC")
+        _add(lines, "Music:", _first(item, "music_name", "sound_name") or _nested(item, "music", "title", "music_name", "name"))
+        _add(lines, "Music Author:", _first(item, "music_author", "music_author_name") or _nested(item, "music", "author", "music_author", "authorName"))
+        _add(lines, "Music ID:", _first(item, "music_id", "musicId") or _nested(item, "music", "id", "music_id", "musicId"))
+        lines.append("")
+
+        _section(lines, "PUBLIC METADATA")
         for key in (
-            "region_code", "country_code", "forward_count", "repost_count",
-            "is_ad", "is_commerce", "is_original", "is_top", "updated_at",
+            "hashtags", "hash_tags", "hashtag_list", "mentions", "mention_list",
+            "location", "location_name", "category", "region_code", "country_code",
+            "forward_count", "repost_count", "is_ad", "is_commerce", "is_original", "is_top",
         ):
             if key in item:
-                _line(lines, key, item.get(key))
+                _add(lines, f"{key}:", item.get(key))
 
-        lines.append("────────────────")
+        lines.append("==============================================================")
         lines.append("")
 
     return "\n".join(lines).rstrip()

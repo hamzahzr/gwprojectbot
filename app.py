@@ -8,7 +8,8 @@ from threading import Lock
 import requests
 from flask import Flask, jsonify, request
 
-from tiktok_api import format_tiktok_result, query_tiktok
+from output_formatter import format_error, format_tool_output
+from tiktok_api import query_tiktok
 from username_api import query_username_api
 
 app = Flask(__name__)
@@ -138,6 +139,16 @@ def send_long_message(chat_id, text, limit=3900):
     return [send_message(chat_id, chunk) for chunk in chunks]
 
 
+def send_tool_result(chat_id, tool_name, result):
+    text = format_tool_output(tool_name, result, title="GW-PROJECT RESULT")
+    return send_long_message(chat_id, text)
+
+
+def send_tool_error(chat_id, tool_name, error):
+    text = format_error(tool_name, str(error))
+    return send_long_message(chat_id, text)
+
+
 def edit_message(chat_id, message_id, text, markup=None):
     payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     if markup is not None:
@@ -229,28 +240,6 @@ def valid_username(value):
     return bool(re.fullmatch(r"@?[A-Za-z0-9._-]{1,50}", value.strip()))
 
 
-def format_username_result(username, result):
-    items = result if isinstance(result, list) else result.get("data", result.get("items", [])) if isinstance(result, dict) else []
-    if isinstance(items, dict):
-        items = [items]
-    found = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        url = str(item.get("site_url_user") or "").strip()
-        status = str(item.get("status") or "").lower()
-        if url and status in {"found", "true", "200", "ok"}:
-            found.append(url)
-        elif url and item.get("site_name"):
-            found.append(url)
-    found = list(dict.fromkeys(found))
-    if not found:
-        return f"👤 <b>CEK USERNAME</b>\n\nUsername: <code>{html.escape(username)}</code>\n\nTidak ditemukan profil publik yang cocok."
-    lines = ["👤 <b>CEK USERNAME</b>", f"\nUsername: <code>{html.escape(username)}</code>", "", f"Ditemukan: <b>{len(found)}</b> profil publik", ""]
-    lines.extend(f"• {html.escape(url)}" for url in found[:50])
-    return "\n".join(lines)
-
-
 def configured_api(name):
     url = os.getenv(f"{name}_API_URL", "").strip()
     token = os.getenv(f"{name}_API_TOKEN", "").strip()
@@ -289,71 +278,6 @@ def call_search_api(value):
     response = requests.post(url, json=payload, timeout=60)
     response.raise_for_status()
     return response.json()
-
-
-SENSITIVE_KEYS = re.compile(
-    r"(?:password|passwd|pwd|token|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|session|credential|private[_-]?key|cvv|cvc|otp|pin|security[_-]?code)",
-    re.I,
-)
-
-
-def _safe_search_value(key, value):
-    key_text = str(key)
-    if SENSITIVE_KEYS.search(key_text):
-        return "[REDACTED]"
-    if isinstance(value, dict):
-        return {k: _safe_search_value(k, v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_safe_search_value(key_text, item) for item in value]
-    return value
-
-
-def _render_search_value(value, indent=0):
-    prefix = "  " * indent
-    if isinstance(value, dict):
-        lines = []
-        for key, item in value.items():
-            safe_item = _safe_search_value(key, item)
-            if isinstance(safe_item, (dict, list)):
-                lines.append(f"{prefix}<b>{html.escape(str(key))}</b>:")
-                lines.extend(_render_search_value(safe_item, indent + 1))
-            else:
-                lines.append(f"{prefix}<b>{html.escape(str(key))}</b>: {html.escape(str(safe_item))}")
-        return lines
-    if isinstance(value, list):
-        lines = []
-        for index, item in enumerate(value, 1):
-            if isinstance(item, (dict, list)):
-                lines.append(f"{prefix}<b>#{index}</b>")
-                lines.extend(_render_search_value(item, indent + 1))
-            else:
-                lines.append(f"{prefix}• {html.escape(str(item))}")
-        return lines
-    return [f"{prefix}{html.escape(str(value))}"]
-
-
-def search_result_message(result):
-    if not isinstance(result, dict):
-        return "🔎 <b>SEARCH</b>\n\nAPI merespons dengan format yang tidak dikenali."
-
-    # Render the complete response structure instead of returning only List names.
-    # High-risk credential fields are redacted before rendering.
-    safe_result = _safe_search_value("root", result)
-    lines = ["🔎 <b>SEARCH</b>", ""]
-    lines.extend(_render_search_value(safe_result))
-    return "\n".join(lines)
-
-
-def safe_api_message(name, result):
-    if not isinstance(result, dict):
-        return f"✅ <b>{html.escape(name)}</b>\n\nAPI merespons, tetapi format hasil tidak dikenali."
-    safe = []
-    for key in ("status", "message", "count", "total", "success"):
-        if key in result and isinstance(result[key], (str, int, float, bool)):
-            safe.append(f"{html.escape(key.title())}: <b>{html.escape(str(result[key]))}</b>")
-    if not safe:
-        return f"✅ <b>{html.escape(name)}</b>\n\nAPI merespons dengan sukses. Detail mentah tidak ditampilkan."
-    return f"✅ <b>{html.escape(name)}</b>\n\n" + "\n".join(safe)
 
 
 def callback_handler(cb):
@@ -493,24 +417,24 @@ def handle_message(message):
         try:
             if pending == "search":
                 result = call_search_api(text)
-                send_long_message(chat_id, search_result_message(result))
+                send_tool_result(chat_id, "SEARCH", result)
             elif pending == "username":
                 if not valid_username(text):
                     send_message(chat_id, "❌ Format username tidak valid.")
                     return
                 result = query_username_api(text)
-                send_message(chat_id, format_username_result(text, result))
+                send_tool_result(chat_id, "CEK USERNAME", result)
             elif pending == "tiktok":
                 result = query_tiktok(text)
-                send_long_message(chat_id, format_tiktok_result(result))
+                send_tool_result(chat_id, "TIKTOK SCRAPER", result)
             else:
                 name = {"rekening": "REKENING", "ewallet": "EWALLET", "ai": "AI"}[pending]
                 result = call_configured_api(name, text)
-                send_message(chat_id, safe_api_message(name, result))
+                send_tool_result(chat_id, name, result)
         except requests.RequestException as exc:
-            send_message(chat_id, f"❌ Request API gagal: <code>{html.escape(str(exc))}</code>")
+            send_tool_error(chat_id, pending.upper(), f"Request API gagal: {exc}")
         except Exception as exc:
-            send_message(chat_id, f"❌ Error: <code>{html.escape(str(exc))}</code>")
+            send_tool_error(chat_id, pending.upper(), exc)
         return
     send_message(chat_id, "Gunakan /start untuk membuka menu.")
 

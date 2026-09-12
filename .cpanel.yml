@@ -3,6 +3,7 @@ deployment:
   tasks:
     - export APPPATH=/home/gwpe7134/gwprojectbot_app
     - /bin/cp app.py $APPPATH/app.py
+    - /bin/cp output_formatter.py $APPPATH/output_formatter.py
     - /bin/cp username_api.py $APPPATH/username_api.py
     - /bin/cp tiktok_api.py $APPPATH/tiktok_api.py
     - /bin/cp requirements.txt $APPPATH/requirements.txt

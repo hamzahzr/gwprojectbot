@@ -303,7 +303,7 @@ def callback_handler(cb):
                 return
             set_pending(uid, data)
             prompts = {
-                "search": "🔎 <b>SEARCH</b>\n\nSilakan masukkan input untuk SEARCH.",
+                "search": "🔎 <b>SEARCH</b>\n\nLangsung kirim target pencarian:\n<code>email@domain.com</code>\n<code>6281234567890</code>\n<code>username123</code>\n<code>Nama Lengkap</code>\n<code>B1234XYZ</code>\n<code>3201234567890123</code>\n<code>192.168.1.1</code>\n<code>example.com</code>",
                 "username": "👤 <b>CEK USERNAME</b>\n\nSilakan masukkan username.\nContoh: <code>@username</code>",
                 "tiktok": "🎵 <b>TIKTOK SCRAPER</b>\n\nKirim URL profil/video TikTok.",
                 "rekening": "🏦 <b>CEK REKENING</b>\n\nMasukkan data yang ingin diperiksa.",

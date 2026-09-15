@@ -183,7 +183,6 @@ def tools_menu(user_id):
         [button("🎵 TIKTOK SCRAPER", "tiktok")],
         [button("🏦 CEK REKENING", "rekening")],
         [button("💳 CEK eWallet", "ewallet")],
-        [button("🧠 AI ANALYSIS", "ai")],
         [button("🔙 KEMBALI", "home")],
     ]}
 

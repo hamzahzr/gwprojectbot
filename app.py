@@ -26,7 +26,7 @@ _pending_input = {}
 _rate_lock = Lock()
 _db_lock = Lock()
 
-PERMISSIONS = ("search", "ai", "username", "rekening", "ewallet", "tiktok", "tools")
+PERMISSIONS = ("search", "ai", "username", "rekening", "ewallet", "tiktok", "nopol", "tools")
 
 
 def db():
@@ -183,6 +183,7 @@ def tools_menu(user_id):
         [button("🎵 TIKTOK SCRAPER", "tiktok")],
         [button("🏦 CEK REKENING", "rekening")],
         [button("💳 CEK eWallet", "ewallet")],
+        [button("🚗 CEK NOPOL", "nopol")],
         [button("🔙 KEMBALI", "home")],
     ]}
 
@@ -257,6 +258,17 @@ def call_configured_api(name, value):
     return response.json()
 
 
+def call_nopol_api(value):
+    url = os.getenv("NOPOL_API_URL", "https://neosint.online/v1/cek-nopol").strip()
+    token = os.getenv("NOPOL_API_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("NOPOL_API_TOKEN belum dikonfigurasi")
+    headers = {"Accept": "application/json", "X-API-Key": token}
+    response = requests.get(url, params={"nopol": value.strip()}, headers=headers, timeout=60)
+    response.raise_for_status()
+    return response.json()
+
+
 def call_search_api(value):
     url = os.getenv("SEARCH_API_URL", "https://leakosintapi.com/").strip()
     token = os.getenv("SEARCH_API_TOKEN", "").strip()
@@ -295,7 +307,7 @@ def callback_handler(cb):
         elif data == "tools":
             clear_pending(uid)
             edit_message(chat_id, message_id, "<b>🧰 ALL TOOLS</b>\n\nPilih layanan yang tersedia.", tools_menu(uid))
-        elif data in {"search", "username", "tiktok", "rekening", "ewallet", "ai"}:
+        elif data in {"search", "username", "tiktok", "rekening", "ewallet", "nopol", "ai"}:
             clear_pending(uid)
             if not has_permission(uid, data):
                 edit_message(chat_id, message_id, "🔒 <b>AKSES DITOLAK</b>\n\nAnda belum mendapat akses untuk tool ini.", {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
@@ -307,6 +319,7 @@ def callback_handler(cb):
                 "tiktok": "🎵 <b>TIKTOK SCRAPER</b>\n\nKirim URL profil/video TikTok.",
                 "rekening": "🏦 <b>CEK REKENING</b>\n\nMasukkan data yang ingin diperiksa.",
                 "ewallet": "💳 <b>CEK eWallet</b>\n\nMasukkan data yang ingin diperiksa.",
+                "nopol": "🚗 <b>CEK NOPOL</b>\n\nMasukkan nomor polisi kendaraan.\nContoh: <code>B1234XYZ</code>",
                 "ai": "🧠 <b>AI ANALYSIS</b>\n\nMasukkan teks/data untuk dianalisis.",
             }
             edit_message(chat_id, message_id, prompts[data], {"inline_keyboard": [[button("🔙 KEMBALI", "tools")]]})
@@ -327,7 +340,7 @@ def callback_handler(cb):
             edit_message(chat_id, message_id, users_text(), {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
         elif data == "grant_help":
             clear_pending(uid)
-            edit_message(chat_id, message_id, "➕ <b>GRANT AKSES</b>\n\nGunakan command:\n<code>/grant USER_ID PERMISSION</code>\n\nPermission: search, ai, username, rekening, ewallet, tiktok, tools", {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
+            edit_message(chat_id, message_id, "➕ <b>GRANT AKSES</b>\n\nGunakan command:\n<code>/grant USER_ID PERMISSION</code>\n\nPermission: search, ai, username, rekening, ewallet, tiktok, nopol, tools", {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
         elif data == "revoke_help":
             clear_pending(uid)
             edit_message(chat_id, message_id, "🚫 <b>REVOKE AKSES</b>\n\nGunakan command:\n<code>/revoke USER_ID PERMISSION</code>", {"inline_keyboard": [[button("🔙 KEMBALI", "settings")]]})
@@ -426,6 +439,9 @@ def handle_message(message):
             elif pending == "tiktok":
                 result = query_tiktok(text)
                 send_tool_result(chat_id, "TIKTOK SCRAPER", result)
+            elif pending == "nopol":
+                result = call_nopol_api(text)
+                send_tool_result(chat_id, "CEK NOPOL", result)
             else:
                 name = {"rekening": "REKENING", "ewallet": "EWALLET", "ai": "AI"}[pending]
                 result = call_configured_api(name, text)

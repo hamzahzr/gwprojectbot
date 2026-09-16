@@ -6,13 +6,16 @@ import time
 from threading import Lock
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, session
 
 from output_formatter import format_error, format_tool_output
 from tiktok_api import query_tiktok
 from username_api import query_username_api
+from bot_manager import manager as manager_blueprint
 
 app = Flask(__name__)
+app.secret_key = os.getenv("DASHBOARD_SESSION_SECRET", "") or os.urandom(32)
+app.register_blueprint(manager_blueprint)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -456,7 +459,7 @@ def handle_message(message):
 
 @app.get("/")
 def health():
-    return jsonify({"ok": True, "service": "gwprojectbot"})
+    return jsonify({"ok": True, "service": "gwprojectbot", "manager": "/manager"})
 
 
 @app.post("/webhook")
